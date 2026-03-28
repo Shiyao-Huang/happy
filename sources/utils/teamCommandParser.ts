@@ -5,8 +5,22 @@
  */
 
 import { linkTaskToSession } from '@/-zen/model/taskSessionLink';
+import type { TodoItem, TodoState } from '@/-zen/model/ops';
 import { storage } from '@/sync/storage';
-import { v4 as uuidv4 } from 'uuid';
+
+type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
+type CommandTaskStatus = 'todo' | 'in-progress' | 'review' | 'done';
+type CommandTodoItem = TodoItem & {
+  status?: CommandTaskStatus;
+  assignee?: string | null;
+};
+
+const EMPTY_TODO_STATE: TodoState = {
+  todos: {},
+  undoneOrder: [],
+  doneOrder: [],
+  versions: {}
+};
 
 export interface ParsedCommand {
   type: 'createTask' | 'updateTask' | 'assignTask' | 'completeTask' | 'unknown';
@@ -19,6 +33,70 @@ export interface TaskCommandResult {
   message: string;
   taskId?: string;
   data?: any;
+}
+
+function getCurrentTodoState(): TodoState {
+  return storage.getState().todoState || EMPTY_TODO_STATE;
+}
+
+function buildTodoOrders(
+  todoState: TodoState,
+  taskId: string,
+  previousDone: boolean,
+  nextDone: boolean
+): Pick<TodoState, 'undoneOrder' | 'doneOrder'> {
+  const hasInUndone = todoState.undoneOrder.includes(taskId);
+  const hasInDone = todoState.doneOrder.includes(taskId);
+
+  if (previousDone === nextDone) {
+    if (nextDone) {
+      return {
+        undoneOrder: todoState.undoneOrder.filter((id) => id !== taskId),
+        doneOrder: hasInDone ? todoState.doneOrder : [taskId, ...todoState.doneOrder],
+      };
+    }
+
+    return {
+      undoneOrder: hasInUndone ? todoState.undoneOrder : [...todoState.undoneOrder, taskId],
+      doneOrder: todoState.doneOrder.filter((id) => id !== taskId),
+    };
+  }
+
+  if (nextDone) {
+    return {
+      undoneOrder: todoState.undoneOrder.filter((id) => id !== taskId),
+      doneOrder: [taskId, ...todoState.doneOrder.filter((id) => id !== taskId)],
+    };
+  }
+
+  return {
+    undoneOrder: [...todoState.undoneOrder.filter((id) => id !== taskId), taskId],
+    doneOrder: todoState.doneOrder.filter((id) => id !== taskId),
+  };
+}
+
+function applyTodoUpdate(taskId: string, updater: (todo: CommandTodoItem, now: number) => CommandTodoItem): CommandTodoItem | null {
+  const todoState = getCurrentTodoState();
+  const todo = todoState.todos[taskId] as CommandTodoItem | undefined;
+
+  if (!todo) {
+    return null;
+  }
+
+  const now = Date.now();
+  const updatedTask = updater(todo, now);
+  const orders = buildTodoOrders(todoState, taskId, Boolean(todo.done), Boolean(updatedTask.done));
+
+  storage.getState().applyTodos({
+    ...todoState,
+    todos: {
+      ...todoState.todos,
+      [taskId]: updatedTask,
+    },
+    ...orders,
+  });
+
+  return updatedTask;
 }
 
 /**
@@ -184,7 +262,7 @@ export async function executeCreateTask(
       description: params.description || '',
       done: false,
       status: 'todo',
-      priority: params.priority || 'medium',
+      priority: (params.priority || 'medium') as TaskPriority,
       assignee: params.assignee || null,
       teamId,
       createdAt: Date.now(),
@@ -235,8 +313,8 @@ export async function executeUpdateTask(
   params: Record<string, any>
 ): Promise<TaskCommandResult> {
   try {
-    const currentState = storage.getState();
-    const todo = currentState.todoState?.todos[params.taskId];
+    const todoState = getCurrentTodoState();
+    const todo = todoState.todos[params.taskId] as CommandTodoItem | undefined;
 
     if (!todo) {
       return {
@@ -245,20 +323,40 @@ export async function executeUpdateTask(
       };
     }
 
-    // 更新任务
-    const updatedTask = {
-      ...todo,
-      ...(params.status && { status: params.status }),
-      ...(params.priority && { priority: params.priority }),
-      updatedAt: Date.now()
-    };
+    const updatedTask = applyTodoUpdate(params.taskId, (currentTodo, now) => {
+      const nextStatus = (params.status || currentTodo.status || (currentTodo.done ? 'done' : 'todo')) as CommandTaskStatus;
+      const nextDone = nextStatus === 'done' ? true : currentTodo.done && !params.status;
 
-    // 保存更新
-    // TODO: 调用实际的storage更新函数
+      return {
+        ...currentTodo,
+        ...(params.status && { status: nextStatus }),
+        ...(params.priority && { priority: params.priority as TaskPriority }),
+        done: nextDone,
+        updatedAt: now,
+        completedAt: nextDone
+          ? (currentTodo.completedAt ?? now)
+          : undefined,
+      };
+    });
+
+    if (!updatedTask) {
+      return {
+        success: false,
+        message: `❌ Task not found: ${params.taskId}`
+      };
+    }
+
+    const messageLines = [`✅ Task updated: "${updatedTask.title}"`];
+    if (params.status) {
+      messageLines.push(`Status: ${params.status}`);
+    }
+    if (params.priority) {
+      messageLines.push(`Priority: ${params.priority}`);
+    }
 
     return {
       success: true,
-      message: `✅ Task updated: "${updatedTask.title}"\n${params.status ? `Status: ${params.status}` : ''}${params.priority ? `Priority: ${params.priority}` : ''}`,
+      message: messageLines.join('\n'),
       taskId: params.taskId,
       data: updatedTask
     };
@@ -278,8 +376,8 @@ export async function executeCompleteTask(
   taskId: string
 ): Promise<TaskCommandResult> {
   try {
-    const currentState = storage.getState();
-    const todo = currentState.todoState?.todos[taskId];
+    const todoState = getCurrentTodoState();
+    const todo = todoState.todos[taskId] as CommandTodoItem | undefined;
 
     if (!todo) {
       return {
@@ -288,14 +386,20 @@ export async function executeCompleteTask(
       };
     }
 
-    // 更新为完成状态
-    const updatedTask = {
-      ...todo,
+    const updatedTask = applyTodoUpdate(taskId, (currentTodo, now) => ({
+      ...currentTodo,
       status: 'done',
-      updatedAt: Date.now()
-    };
+      done: true,
+      updatedAt: now,
+      completedAt: currentTodo.completedAt ?? now,
+    }));
 
-    // TODO: 调用实际的storage更新函数
+    if (!updatedTask) {
+      return {
+        success: false,
+        message: `❌ Task not found: ${taskId}`
+      };
+    }
 
     return {
       success: true,
@@ -308,6 +412,51 @@ export async function executeCompleteTask(
     return {
       success: false,
       message: `❌ Failed to complete task: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
+  }
+}
+
+/**
+ * 执行任务分配命令
+ */
+export async function executeAssignTask(
+  params: Record<string, any>
+): Promise<TaskCommandResult> {
+  try {
+    const todoState = getCurrentTodoState();
+    const todo = todoState.todos[params.taskId] as CommandTodoItem | undefined;
+
+    if (!todo) {
+      return {
+        success: false,
+        message: `❌ Task not found: ${params.taskId}`
+      };
+    }
+
+    const updatedTask = applyTodoUpdate(params.taskId, (currentTodo, now) => ({
+      ...currentTodo,
+      assignee: params.assignee || null,
+      updatedAt: now,
+    }));
+
+    if (!updatedTask) {
+      return {
+        success: false,
+        message: `❌ Task not found: ${params.taskId}`
+      };
+    }
+
+    return {
+      success: true,
+      message: `✅ Task assigned: "${updatedTask.title}"${params.assignee ? `\nAssigned to: @${params.assignee}` : ''}`,
+      taskId: params.taskId,
+      data: updatedTask
+    };
+  } catch (error) {
+    console.error('Failed to assign task:', error);
+    return {
+      success: false,
+      message: `❌ Failed to assign task: ${error instanceof Error ? error.message : 'Unknown error'}`
     };
   }
 }

@@ -1,4 +1,4 @@
-import { io, Socket } from 'socket.io-client';
+import { io, type Socket } from 'socket.io-client';
 import { TokenStorage } from '@/auth/tokenStorage';
 import { Encryption } from './encryption/encryption';
 import { getCurrentAuth } from '@/auth/AuthContext';
@@ -20,11 +20,51 @@ export interface SyncSocketState {
 
 export type SyncSocketListener = (state: SyncSocketState) => void;
 
+const AUTH_FAILURE_PATTERNS = [
+    'authentication failed',
+    'invalid token',
+    'account not found for token',
+    'invalid authentication token',
+    'missing authentication token',
+];
+
+function getErrorText(error: unknown): string {
+    if (typeof error === 'string') {
+        return error;
+    }
+
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    if (error && typeof error === 'object') {
+        const value = error as Record<string, unknown>;
+        return [value.message, value.description, value.type, value.context]
+            .filter((part): part is string => typeof part === 'string' && part.length > 0)
+            .join(' ');
+    }
+
+    return '';
+}
+
+function isAuthFailure(error: unknown): boolean {
+    const message = getErrorText(error).toLowerCase();
+    return AUTH_FAILURE_PATTERNS.some(pattern => message.includes(pattern)) || /\b401\b/.test(message);
+}
+
+function isWebSocketTransportFailure(error: unknown): boolean {
+    const message = getErrorText(error).toLowerCase();
+
+    return message.includes('websocket')
+        || message.includes('transport error')
+        || message.includes('xhr poll error');
+}
+
 //
 // Main Class
 //
 
-class ApiSocket {
+export class ApiSocket {
 
     // State
     private socket: Socket | null = null;
@@ -34,6 +74,7 @@ class ApiSocket {
     private reconnectedListeners: Set<() => void> = new Set();
     private statusListeners: Set<(status: 'disconnected' | 'connecting' | 'connected' | 'error') => void> = new Set();
     private currentStatus: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected';
+    private usePollingFallback = false;
 
     //
     // Initialization
@@ -66,7 +107,7 @@ class ApiSocket {
                 token: this.config.token,
                 clientType: 'user-scoped' as const
             },
-            transports: ['websocket', 'polling'],
+            transports: this.usePollingFallback ? ['polling'] : ['websocket', 'polling'],
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
@@ -82,6 +123,17 @@ class ApiSocket {
             this.socket = null;
         }
         this.updateStatus('disconnected');
+    }
+
+    /**
+     * Manual reconnect — tears down the current socket and starts fresh.
+     * Safe to call even when already disconnected.
+     */
+    reconnect() {
+        if (this.config && this.encryption) {
+            this.disconnect();
+            this.connect();
+        }
     }
 
     //
@@ -218,28 +270,41 @@ class ApiSocket {
     }
 
     private setupEventHandlers() {
-        if (!this.socket) return;
+        const socket = this.socket;
+        if (!socket) return;
 
         // Connection events
-        this.socket.on('connect', () => {
-            console.log('🔌 SyncSocket: Connected, recovered: ' + this.socket?.recovered);
-            console.log('🔌 SyncSocket: Socket ID:', this.socket?.id);
+        socket.on('connect', () => {
+            if (this.socket !== socket) {
+                return;
+            }
+
+            console.log('🔌 SyncSocket: Connected, recovered: ' + socket.recovered);
+            console.log('🔌 SyncSocket: Socket ID:', socket.id);
             this.updateStatus('connected');
-            if (!this.socket?.recovered) {
+            if (!socket.recovered) {
                 this.reconnectedListeners.forEach(listener => listener());
             }
         });
 
-        this.socket.on('disconnect', (reason) => {
+        socket.on('disconnect', (reason) => {
+            if (this.socket !== socket) {
+                return;
+            }
+
             console.log('🔌 SyncSocket: Disconnected', reason);
             this.updateStatus('disconnected');
         });
 
         // Error events
-        this.socket.on('connect_error', (error) => {
+        socket.on('connect_error', (error) => {
+            if (this.socket !== socket) {
+                return;
+            }
+
             console.error('🔌 SyncSocket: Connection error', error);
             // Auth rejection from server — stop reconnecting and logout
-            if (error.message === 'Authentication failed' || error.message === 'Invalid token' || error.message === 'Account not found for token') {
+            if (isAuthFailure(error)) {
                 console.error('🔌 SyncSocket: Auth rejected, logging out');
                 this.disconnect();
                 const auth = getCurrentAuth();
@@ -248,16 +313,22 @@ class ApiSocket {
                 }
                 return;
             }
+
+            if (!this.usePollingFallback && isWebSocketTransportFailure(error)) {
+                this.reconnectWithPollingFallback(socket, error);
+                return;
+            }
+
             this.updateStatus('error');
         });
 
-        this.socket.on('error', (error) => {
+        socket.on('error', (error) => {
+            if (this.socket !== socket) {
+                return;
+            }
+
             console.error('🔌 SyncSocket: Error', error);
-            // Server emits error with an object after connection; check for auth rejection
-            const msg = typeof error === 'object' && error !== null
-                ? (error as any).message as string | undefined
-                : undefined;
-            if (msg === 'Authentication failed' || msg === 'Invalid token' || msg === 'Account not found for token' || msg === 'Invalid authentication token' || msg === 'Missing authentication token') {
+            if (isAuthFailure(error)) {
                 console.error('🔌 SyncSocket: Auth rejected via error event, logging out');
                 this.disconnect();
                 const auth = getCurrentAuth();
@@ -266,11 +337,21 @@ class ApiSocket {
                 }
                 return;
             }
+
+            if (!this.usePollingFallback && isWebSocketTransportFailure(error)) {
+                this.reconnectWithPollingFallback(socket, error);
+                return;
+            }
+
             this.updateStatus('error');
         });
 
         // Message handling
-        this.socket.onAny((event, data) => {
+        socket.onAny((event, data) => {
+            if (this.socket !== socket) {
+                return;
+            }
+
             const handler = this.messageHandlers.get(event);
             if (handler) {
                 handler(data);
@@ -278,6 +359,16 @@ class ApiSocket {
                 console.warn(`📥 SyncSocket: No handler registered for '${event}'`);
             }
         });
+    }
+
+    private reconnectWithPollingFallback(socket: Socket, error: unknown) {
+        console.warn('🔌 SyncSocket: WebSocket transport failed, retrying with polling fallback', error);
+        this.usePollingFallback = true;
+        socket.disconnect();
+        if (this.socket === socket) {
+            this.socket = null;
+        }
+        this.connect();
     }
 }
 

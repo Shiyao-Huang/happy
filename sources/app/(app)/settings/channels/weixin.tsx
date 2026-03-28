@@ -84,11 +84,11 @@ export default React.memo(function WeixinChannelScreen() {
                 if (result.status === 'confirmed' && result.credentials) {
                     await bindWeixinChannel(credentials, result.credentials);
                     if (cancelled) return;
-                    setNotice('WeChat connected successfully.');
+                    setNotice(t('channels.weixinConnected'));
                     setQrCode(null);
                     await refreshStatus();
                 } else if (result.status === 'expired') {
-                    setError('QR code expired. Generate a new one and scan again.');
+                    setError(t('channels.weixinQrExpired'));
                     setQrCode(null);
                 }
             } catch (err) {
@@ -131,7 +131,7 @@ export default React.memo(function WeixinChannelScreen() {
             await disconnectWeixinChannel(credentials);
             setStatus(null);
             setQrCode(null);
-            setNotice('WeChat disconnected.');
+            setNotice(t('channels.weixinDisconnected'));
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -168,8 +168,8 @@ export default React.memo(function WeixinChannelScreen() {
                     </View>
                     <Text style={[styles.statusMeta, { color: theme.colors.textSecondary }]}>
                         {isConnected
-                            ? `Push policy: ${currentPolicy}`
-                            : 'Bind your WeChat bot to receive agent messages and reply from WeChat.'}
+                            ? t('channels.weixinPushPolicyCurrent', { policy: currentPolicy })
+                            : t('channels.weixinBindHint')}
                     </Text>
                     {error ? (
                         <Text style={[styles.statusError, { color: theme.colors.warningCritical }]}>{error}</Text>
@@ -206,15 +206,15 @@ export default React.memo(function WeixinChannelScreen() {
             </ItemGroup>
 
             {qrCode ? (
-                <ItemGroup title={t('channels.connectWeixin')} footer={isPolling ? 'Waiting for scan confirmation...' : undefined}>
+                <ItemGroup title={t('channels.connectWeixin')} footer={isPolling ? t('channels.weixinScanWaiting') : undefined}>
                     <View style={[styles.qrCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.divider }]}>
                         <QRCode data={qrCode.displayUrl} size={220} />
                         <Text style={[styles.qrHint, { color: theme.colors.textSecondary }]}>
-                            Scan this QR code in WeChat iLink Bot. The page will bind automatically after confirmation.
+                            {t('channels.weixinQrHint')}
                         </Text>
                         <Pressable onPress={() => copyCommand(qrCode.displayUrl)}>
                             <Text style={[styles.copyLink, { color: theme.colors.button.primary.background }]}>
-                                Copy QR link
+                                {t('channels.weixinCopyQrLink')}
                             </Text>
                         </Pressable>
                     </View>
@@ -230,7 +230,7 @@ export default React.memo(function WeixinChannelScreen() {
                                 ? t('channels.policyAll')
                                 : policy === 'important'
                                     ? t('channels.policyImportant')
-                                    : 'Silent';
+                                    : t('channels.policySilent');
                             return (
                                 <Pressable
                                     key={policy}

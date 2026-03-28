@@ -127,6 +127,7 @@ export const AddAgentToTeamModal = React.memo(function AddAgentToTeamModal({ tea
             await sync.addTeamMember(teamId, sessionId, roleId, sessionName, {
                 memberId,
                 sessionTag,
+                candidateId: `spec:${selectedGenome.id}`,
                 specId: selectedGenome.id,
                 runtimeType,
                 ...(trimmedCustomPrompt ? { customPrompt: trimmedCustomPrompt } : {}),

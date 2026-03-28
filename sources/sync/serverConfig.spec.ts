@@ -36,7 +36,7 @@ describe('serverConfig', () => {
     beforeEach(() => {
         storage.clear();
         delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
-        delete (globalThis as typeof globalThis & { window?: Window }).window;
+        delete (globalThis as { window?: Window }).window;
     });
 
     afterEach(() => {
@@ -45,7 +45,7 @@ describe('serverConfig', () => {
         } else {
             delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
         }
-        delete (globalThis as typeof globalThis & { window?: Window }).window;
+        delete (globalThis as { window?: Window }).window;
         vi.restoreAllMocks();
     });
 

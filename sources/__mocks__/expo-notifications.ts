@@ -1,0 +1,22 @@
+// Stub for expo-notifications — native module, cannot run in Node.js test env
+export const scheduleNotificationAsync = async () => ({ identifier: '' });
+export const cancelScheduledNotificationAsync = async (_id: string) => {};
+export const cancelAllScheduledNotificationsAsync = async () => {};
+export const getExpoPushTokenAsync = async () => ({ data: '' });
+export const getDevicePushTokenAsync = async () => ({ type: 'ios', data: '' });
+export const requestPermissionsAsync = async () => ({ status: 'denied' as const, granted: false });
+export const getPermissionsAsync = async () => ({ status: 'denied' as const, granted: false });
+export const setBadgeCountAsync = async (_count: number) => true;
+export const getBadgeCountAsync = async () => 0;
+export const addNotificationReceivedListener = (_handler: any) => ({ remove: () => {} });
+export const addNotificationResponseReceivedListener = (_handler: any) => ({ remove: () => {} });
+export const removeNotificationSubscription = (_sub: any) => {};
+export const getPresentedNotificationsAsync = async () => [];
+export const dismissAllNotificationsAsync = async () => {};
+export const setNotificationHandler = (_handler: any) => {};
+export const setNotificationChannelAsync = async (_id: string, _channel: any) => ({});
+export const getNotificationChannelsAsync = async () => [];
+export const AndroidImportance = { DEFAULT: 3, HIGH: 4, LOW: 2, MAX: 5, MIN: 1, NONE: 0, UNSPECIFIED: -1000 };
+export const AndroidNotificationVisibility = { PRIVATE: 0, PUBLIC: 1, SECRET: -1, UNKNOWN: -1000 };
+export const IosAlertStyle = {};
+export const SchedulableTriggerInputTypes = {};

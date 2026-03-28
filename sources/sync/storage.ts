@@ -441,7 +441,7 @@ export const storage = create<StorageState>()((set, get) => {
                         console.error(`[STORAGE] Reducer crashed for session ${session.id}:`, e);
                         return;
                     }
-                    const processedMessages = reducerResult.messages;
+                    const processedMessages = reducerResult!.messages;
 
                     // Always update the session messages, even if no new messages were created
                     // This ensures the reducer state is updated with the new AgentState

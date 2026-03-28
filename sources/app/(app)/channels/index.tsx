@@ -70,7 +70,7 @@ export default React.memo(function ChannelsScreen() {
                     subtitle={t('settings.channelsWeixinSubtitle')}
                     icon={<Ionicons name="chatbubbles-outline" size={29} color="#09B83E" />}
                     detail={statusText}
-                    onPress={() => router.push('/channels/weixin')}
+                    onPress={() => router.push('/channels/weixin' as any)}
                     showChevron
                 />
             </ItemGroup>

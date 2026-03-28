@@ -792,6 +792,7 @@ export default function NewTeamScreen() {
                 });
 
             const spawnedMembers: KanbanTeamMember[] = [];
+            let promptBootstrapStarted = false;
             const promptRuntimePreference = PROMPT_AGENT_PREFERENCE_LABELS[promptAgentPreference];
             const promptTaskRequest = isPromptMode ? [
                 taskPrompt.trim(),
@@ -865,7 +866,6 @@ export default function NewTeamScreen() {
                         const agentTitle = 'Org-manager 1';
                         try {
                             const orgManagerGenome = await fetchGenomeByName('@official', 'org-manager').catch(() => null);
-                            const spawnRequestedAt = Date.now();
                             const memberId = randomUUID();
                             const sessionTag = buildTeamMemberSessionTag(room.id, memberId);
                             const sessionId = await desktopBridge.startAgentSession({
@@ -874,6 +874,7 @@ export default function NewTeamScreen() {
                                 args: ['--session-tag', sessionTag],
                                 env: {
                                     AHA_AGENT_ROLE: roleId,
+                                    AHA_EXECUTION_PLANE: 'bypass',
                                     AHA_ROOM_ID: room.id,
                                     AHA_ROOM_NAME: title.trim(),
                                     AHA_TEAM_MEMBER_ID: memberId,
@@ -884,16 +885,7 @@ export default function NewTeamScreen() {
                                 cwd: resolvedCwd || undefined,
                             });
                             if (sessionId) {
-                                spawnedMembers.push({
-                                    memberId,
-                                    sessionId,
-                                    sessionTag,
-                                    roleId,
-                                    displayName: agentTitle,
-                                    lifecycle: {
-                                        spawnRequestedAt,
-                                    },
-                                });
+                                promptBootstrapStarted = true;
                                 trackAgentDeployed(sessionId, {
                                     source: 'team_create_desktop_bridge_prompt',
                                     team_id: room.id,
@@ -992,13 +984,13 @@ export default function NewTeamScreen() {
                             try {
                                 // Resolve org-manager genome from hub so the agent loads its DNA
                                 const orgManagerGenome = await fetchGenomeByName('@official', 'org-manager').catch(() => null);
-                                const spawnRequestedAt = Date.now();
                                 const spawnedSessionId = await sync.spawnSessionOnMachine(targetMachine.id, {
                                     directory: resolvedCwd,
                                     agent: promptAgentPreference === 'codex' ? 'codex' : 'claude',
                                     sessionTag,
                                     teamId: artifactId,
                                     role: roleId,
+                                    executionPlane: 'bypass',
                                     sessionName: agentTitle,
                                     sessionPath: resolvedCwd,
                                     ...(orgManagerGenome ? { specId: orgManagerGenome.id } : {}),
@@ -1008,16 +1000,7 @@ export default function NewTeamScreen() {
                                     }
                                 });
                                 if (spawnedSessionId) {
-                                    spawnedMembers.push({
-                                        memberId,
-                                        sessionId: spawnedSessionId,
-                                        sessionTag,
-                                        roleId,
-                                        displayName: agentTitle,
-                                        lifecycle: {
-                                            spawnRequestedAt,
-                                        },
-                                    });
+                                    promptBootstrapStarted = true;
                                     trackAgentDeployed(spawnedSessionId, {
                                         source: 'team_create_remote_prompt',
                                         team_id: artifactId,
@@ -1107,7 +1090,7 @@ export default function NewTeamScreen() {
                 board.team.members = [...manualMembers, ...spawnedMembers];
                 const updatedBody = JSON.stringify(board, null, 2);
 
-                if (isPromptMode && hasRequestedSpawns && spawnedMembers.length === 0) {
+                if (isPromptMode && hasRequestedSpawns && spawnedMembers.length === 0 && !promptBootstrapStarted) {
                     throw new Error(seedSpawnFailureReason || 'Failed to auto-spawn org-manager.');
                 }
 
@@ -1167,7 +1150,7 @@ export default function NewTeamScreen() {
 
                 const initialBody = JSON.stringify(board, null, 2);
 
-                if (isPromptMode && hasRequestedSpawns && spawnedMembers.length === 0) {
+                if (isPromptMode && hasRequestedSpawns && spawnedMembers.length === 0 && !promptBootstrapStarted) {
                     throw new Error(seedSpawnFailureReason || 'Failed to auto-spawn org-manager.');
                 }
 
@@ -1203,7 +1186,9 @@ export default function NewTeamScreen() {
             if (hasRequestedSpawns) {
                 await Modal.alert(
                     'Team Created',
-                    `Team "${title}" created with ${spawnedMembers.length} new agents.`
+                    isPromptMode
+                        ? `Team "${title}" created. Org-manager bootstrap started and will assemble the team in the background.`
+                        : `Team "${title}" created with ${spawnedMembers.length} new agents.`
                 );
             }
 
@@ -1212,7 +1197,7 @@ export default function NewTeamScreen() {
                 team_id: artifactId,
                 prompt_mode: isPromptMode,
                 requested_spawns: hasRequestedSpawns,
-                spawned_agent_count: spawnedMembers.length,
+                spawned_agent_count: spawnedMembers.length + (promptBootstrapStarted ? 1 : 0),
                 manual_member_count: manualMembers.length,
                 environment: desktopBridge ? 'desktop_bridge' : 'remote_sync',
             });

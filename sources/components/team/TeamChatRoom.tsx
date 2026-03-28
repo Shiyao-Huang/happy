@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Image, ActivityIndicator, Modal as RNModal, Dimensions } from 'react-native';
+import { View, ScrollView, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform, Image, ActivityIndicator, Modal as RNModal, Dimensions } from 'react-native';
 import { Text } from '@/components/ui/StyledText';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Ionicons } from '@expo/vector-icons';
@@ -23,6 +23,7 @@ import {
   parseCommand,
   executeCreateTask,
   executeUpdateTask,
+  executeAssignTask,
   executeCompleteTask,
   getCommandHelp,
   type TaskCommandResult,
@@ -39,6 +40,8 @@ import { Modal } from '@/modal';
 import { pushSessionRoute } from '@/utils/returnNavigation';
 import { buildMentionChipAccessibilityLabel, buildMentionChipLabel, buildMentionFlowAccessibilityLabel, buildMentionFlowLabel } from '@/utils/teamMentionSummary';
 import { trackTeamChatSent } from '@/track';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { appendTeamMessage, dedupeAndSortTeamMessages, isNearBottom, mergeTeamMessages } from './teamChatRoomList';
 
 type TeamChatRoomVariant = 'default' | 'edzlf';
 type TeamChatRoomIconName = keyof typeof Ionicons.glyphMap;
@@ -47,6 +50,24 @@ const stylesheet = StyleSheet.create((theme) => ({
     container: {
         flex: 1,
         backgroundColor: theme.colors.groupped.background,
+    },
+    reconnectingBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginHorizontal: 16,
+        marginTop: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 12,
+        backgroundColor: theme.colors.warning + '18',
+        borderWidth: 1,
+        borderColor: theme.colors.warning + '40',
+    },
+    reconnectingBannerText: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: theme.colors.warning,
     },
     messageList: {
         flex: 1,
@@ -1329,6 +1350,11 @@ const MessageBubbleInner = ({
                                         </Pressable>
                                     </View>
                                 )}
+                                {isEdzlf && copied ? (
+                                    <Text style={{ fontSize: 11, color: isMyMessage ? '#E7EFF6' : theme.colors.textSecondary, fontWeight: '600' }}>
+                                        Copied
+                                    </Text>
+                                ) : null}
                             </View>
                         </Pressable>
                     )}
@@ -1339,8 +1365,7 @@ const MessageBubbleInner = ({
                             task={relatedTask}
                             styles={styles}
                             onPress={() => {
-                                // TODO: Navigate to task detail or switch to board tab
-                                console.log('Task pressed:', relatedTask.id);
+                                // Task card is informational within chat; full interaction is on the board tab
                             }}
                         />
                     )}
@@ -1439,13 +1464,13 @@ export default function TeamChatRoom({
 }: TeamChatRoomProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const scrollViewRef = React.useRef<ScrollView>(null);
+    const messageListRef = React.useRef<FlatList<TeamMessage>>(null);
     const isNearBottomRef = React.useRef(true);  // Track if user is near bottom for auto-scroll
     const hasInitialScrolled = React.useRef(false);  // Ensure we scroll to bottom on first layout
 
     // Reliable scroll-to-end helper — uses rAF on web for accurate post-paint timing
     const scrollToEnd = React.useCallback((animated: boolean) => {
-        const doScroll = () => scrollViewRef.current?.scrollToEnd({ animated });
+        const doScroll = () => messageListRef.current?.scrollToEnd({ animated });
         if (Platform.OS === 'web') {
             requestAnimationFrame(() => requestAnimationFrame(doScroll));
         } else {
@@ -1454,6 +1479,7 @@ export default function TeamChatRoom({
     }, []);
     const router = useRouter();
     const isEdzlf = variant === 'edzlf';
+    const connectionStatus = useConnectionStatus();
 
     // 🆕 使用外部 messages（如果提供），否则使用内部状态
     const [internalMessages, setInternalMessages] = React.useState<TeamMessage[]>([]);
@@ -1520,7 +1546,54 @@ export default function TeamChatRoom({
             setTimeout(focusInput, 80);
         }
     }, [composerPrefill]);
-    const [isCompressing, setIsCompressing] = React.useState(false);
+
+    // 🆕 Web: listen for native paste (Cmd+V) to support direct clipboard image pasting
+    React.useEffect(() => {
+        if (Platform.OS !== 'web') return;
+
+        const handleWebPaste = (event: Event) => {
+            const clipboardEvent = event as ClipboardEvent;
+            const items = clipboardEvent.clipboardData?.items;
+            if (!items) return;
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (!item.type.startsWith('image/')) continue;
+
+                const file = item.getAsFile();
+                if (!file) continue;
+
+                clipboardEvent.preventDefault();
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const dataUrl = e.target?.result as string;
+                    if (!dataUrl) return;
+
+                    // dataUrl is "data:image/png;base64,<data>"
+                    const base64 = dataUrl.split(',')[1];
+                    const img = new Image();
+                    img.onload = () => {
+                        setSelectedImage({
+                            uri: dataUrl,
+                            base64,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight,
+                            fileSize: file.size,
+                        });
+                    };
+                    img.src = dataUrl;
+                };
+                reader.readAsDataURL(file);
+                break; // handle first image only
+            }
+        };
+
+        document.addEventListener('paste', handleWebPaste);
+        return () => {
+            document.removeEventListener('paste', handleWebPaste);
+        };
+    }, []);
     // 🆕 Clipboard image detection state
     const [clipboardHasImage, setClipboardHasImage] = React.useState(false);
     const [isCheckingClipboard, setIsCheckingClipboard] = React.useState(false);
@@ -1571,10 +1644,10 @@ export default function TeamChatRoom({
             const asset = result.assets[0];
             setIsCompressing(true);
 
-            // Compress image with aggressive settings for mobile/WebSocket
-            const MAX_WIDTH = 800;
-            const MAX_SIZE_KB = 150; // Max 150KB to ensure fast transmission
-            let quality = 0.6;
+            // Compress image while preserving readability
+            const MAX_WIDTH = 1600;
+            const MAX_SIZE_KB = 800; // Max 800KB to balance quality and transmission
+            let quality = 0.85;
 
             // Calculate new dimensions maintaining aspect ratio
             let width = asset.width;
@@ -1600,7 +1673,7 @@ export default function TeamChatRoom({
                 : 0;
 
             // If still too large, compress more aggressively
-            while (estimatedSize > MAX_SIZE_KB * 1024 && quality > 0.3) {
+            while (estimatedSize > MAX_SIZE_KB * 1024 && quality > 0.5) {
                 quality -= 0.1;
                 width = Math.round(width * 0.8);
                 height = Math.round(height * 0.8);
@@ -2143,12 +2216,7 @@ export default function TeamChatRoom({
 
     // Deduplicate and sort
     const uniqueMessages = React.useMemo(() => {
-        const seen = new Set();
-        return messages.filter(m => {
-            if (seen.has(m.id)) return false;
-            seen.add(m.id);
-            return true;
-        }).sort((a, b) => a.timestamp - b.timestamp);
+        return dedupeAndSortTeamMessages(messages);
     }, [messages]);
 
     const loadMessages = React.useCallback(async () => {
@@ -2156,11 +2224,7 @@ export default function TeamChatRoom({
             setIsLoading(true);
             const result = await sync.getTeamMessages(teamId);
 
-            setMessages(prev => {
-                const combined = [...prev, ...result.messages];
-                const unique = Array.from(new Map(combined.map(m => [m.id, m])).values());
-                return unique.sort((a, b) => a.timestamp - b.timestamp);
-            });
+            setMessages(prev => mergeTeamMessages(prev, result.messages));
 
             setTimeout(() => {
                 scrollToEnd(false);
@@ -2185,16 +2249,17 @@ export default function TeamChatRoom({
         const subscribe = async () => {
             try {
                 const unsubscribe = await sync.subscribeToTeamMessages(teamId, (message) => {
+                    const shouldAutoScroll = isNearBottomRef.current;
                     setMessages(prev => {
                         if (messageIdsRef.current.has(message.id)) {
                             return prev;
                         }
                         messageIdsRef.current.add(message.id);
-                        const next = [...prev, message].sort((a, b) => a.timestamp - b.timestamp);
-                        // Cap React state at 500 to prevent unbounded heap growth
-                        return next.length > 500 ? next.slice(-500) : next;
+                        return appendTeamMessage(prev, message);
                     });
-                    scrollToEnd(true);
+                    if (shouldAutoScroll) {
+                        scrollToEnd(true);
+                    }
                 });
 
                 if (!isActive) {
@@ -2562,7 +2627,7 @@ export default function TeamChatRoom({
                 ...(messageMetadata ? { metadata: messageMetadata } : {}),
             };
             messageIdsRef.current.add(messageId);
-            setMessages(prev => [...prev, optimisticMsg].sort((a, b) => a.timestamp - b.timestamp));
+            setMessages(prev => appendTeamMessage(prev, optimisticMsg));
             isNearBottomRef.current = true;
             scrollToEnd(true);
             setInputText('');
@@ -2607,11 +2672,7 @@ export default function TeamChatRoom({
                 return await executeUpdateTask(command.params);
 
             case 'assignTask':
-                // TODO: 实现分配逻辑
-                return {
-                    success: false,
-                    message: '⚠️ Task assignment feature coming soon'
-                };
+                return await executeAssignTask(command.params);
 
             case 'completeTask':
                 return await executeCompleteTask(command.params.taskId);
@@ -2666,6 +2727,45 @@ export default function TeamChatRoom({
         return null;
     }, [members, fallbackMachineId]);
 
+    const reconnectingBanner = connectionStatus.isReconnecting ? (
+        <View style={styles.reconnectingBanner}>
+            <ActivityIndicator size="small" color={theme.colors.warning} />
+            <Text style={styles.reconnectingBannerText}>重连中...</Text>
+        </View>
+    ) : null;
+
+    const renderMessageItem = React.useCallback(({ item: message }: { item: TeamMessage }) => {
+        if (message.type === 'system') {
+            return (
+                <View style={styles.systemMessage}>
+                    <Ionicons name="information-circle-outline" size={12} color={theme.colors.textSecondary} />
+                    <Text style={styles.systemMessageText}>{message.content}</Text>
+                </View>
+            );
+        }
+
+        return (
+            <MessageBubble
+                message={message}
+                isMyMessage={message.fromRole === 'user' && (!message.fromSessionId || message.fromSessionId === mySessionId)}
+                styles={styles}
+                onAvatarPress={handleAvatarPress}
+                resolveAgentIdentity={resolveAgentIdentity}
+                variant={variant}
+                getTasksForMessage={taskChatSync?.getTasksForMessage}
+            />
+        );
+    }, [handleAvatarPress, mySessionId, resolveAgentIdentity, styles, taskChatSync?.getTasksForMessage, theme.colors.textSecondary, variant]);
+
+    const renderEmptyState = React.useCallback(() => (
+        <View style={styles.emptyState}>
+            <Ionicons name="chatbubbles-outline" size={48} color={theme.colors.textSecondary} />
+            <Text style={styles.emptyStateText}>
+                Start the conversation
+            </Text>
+        </View>
+    ), [styles.emptyState, styles.emptyStateText, theme.colors.textSecondary]);
+
     if (isLoading) {
         return (
             <KeyboardAvoidingView
@@ -2675,6 +2775,7 @@ export default function TeamChatRoom({
             >
                 {renderStatusHeader()}
                 {renderStatusList()}
+                {reconnectingBanner}
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                     <ActivityIndicator size="small" color={theme.colors.textSecondary} />
                 </View>
@@ -2690,19 +2791,28 @@ export default function TeamChatRoom({
         >
             {renderStatusHeader()}
             {renderStatusList()}
-            <ScrollView
-                ref={scrollViewRef}
+            {reconnectingBanner}
+            <FlatList
+                ref={messageListRef}
                 style={styles.messageList}
+                data={uniqueMessages}
+                keyExtractor={(message) => message.id}
+                renderItem={renderMessageItem}
+                ListEmptyComponent={renderEmptyState}
                 contentContainerStyle={[
                     styles.messageListContent,
                     isEdzlf && { paddingHorizontal: 26, paddingTop: 22, paddingBottom: 24 },
-                    uniqueMessages.length === 0 && { flex: 1 }
+                    uniqueMessages.length === 0 && { flexGrow: 1 }
                 ]}
+                initialNumToRender={20}
+                maxToRenderPerBatch={20}
+                windowSize={10}
+                removeClippedSubviews={Platform.OS !== 'web'}
+                keyboardShouldPersistTaps="handled"
                 // Track user scroll position to determine if near bottom
                 onScroll={(event) => {
                     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
-                    const paddingToBottom = 100;  // Threshold for "near bottom"
-                    isNearBottomRef.current = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+                    isNearBottomRef.current = isNearBottom(layoutMeasurement.height, contentOffset.y, contentSize.height);
                 }}
                 scrollEventThrottle={16}
                 // Only auto-scroll when user is near bottom (respecting user intent)
@@ -2718,39 +2828,7 @@ export default function TeamChatRoom({
                         scrollToEnd(false);
                     }
                 }}
-            >
-                {uniqueMessages.length === 0 ? (
-                    <View style={styles.emptyState}>
-                        <Ionicons name="chatbubbles-outline" size={48} color={theme.colors.textSecondary} />
-                        <Text style={styles.emptyStateText}>
-                            Start the conversation
-                        </Text>
-                    </View>
-                ) : (
-                    uniqueMessages.map(message => {
-                        if (message.type === 'system') {
-                            return (
-                                <View key={message.id} style={styles.systemMessage}>
-                                    <Ionicons name="information-circle-outline" size={12} color={theme.colors.textSecondary} />
-                                    <Text style={styles.systemMessageText}>{message.content}</Text>
-                                </View>
-                            );
-                        }
-                        return (
-                            <MessageBubble
-                                key={message.id}
-                                message={message}
-                                isMyMessage={message.fromRole === 'user' && (!message.fromSessionId || message.fromSessionId === mySessionId)}
-                                styles={styles}
-                                onAvatarPress={handleAvatarPress}
-                                resolveAgentIdentity={resolveAgentIdentity}
-                                variant={variant}
-                                getTasksForMessage={taskChatSync?.getTasksForMessage}
-                            />
-                        );
-                    })
-                )}
-            </ScrollView>
+            />
 
             {/* 🆕 历史消息选择器 */}
             {showHistory && myMessageHistory.length > 0 && (
@@ -2866,22 +2944,35 @@ export default function TeamChatRoom({
                                 setTimeout(() => setClipboardHasImage(false), 200);
                             }}
                             onKeyPress={(e) => {
-                                if (mentionSuggestions.length > 0) {
-                                    if (e.nativeEvent.key === 'ArrowUp') {
-                                        e.preventDefault?.();
-                                        mentionMoveUp();
-                                        return;
-                                    }
-                                    if (e.nativeEvent.key === 'ArrowDown') {
-                                        e.preventDefault?.();
-                                        mentionMoveDown();
-                                        return;
-                                    }
-                                    if (e.nativeEvent.key === 'Enter' && mentionSelectedIndex >= 0) {
-                                        e.preventDefault?.();
-                                        handleMentionSelect(mentionSelectedIndex);
-                                        return;
-                                    }
+                                const { resolveTeamChatComposerKeyAction } = require('./teamChatComposer') as typeof import('./teamChatComposer');
+                                const action = resolveTeamChatComposerKeyAction({
+                                    key: e.nativeEvent.key,
+                                    shiftKey: Boolean((e.nativeEvent as { shiftKey?: boolean }).shiftKey),
+                                    mentionSuggestionsCount: mentionSuggestions.length,
+                                    mentionSelectedIndex,
+                                    hasSendableContent: Boolean(inputText.trim() || selectedImage),
+                                    isWeb: Platform.OS === 'web',
+                                });
+
+                                if (action === 'mention-up') {
+                                    e.preventDefault?.();
+                                    mentionMoveUp();
+                                    return;
+                                }
+                                if (action === 'mention-down') {
+                                    e.preventDefault?.();
+                                    mentionMoveDown();
+                                    return;
+                                }
+                                if (action === 'mention-select') {
+                                    e.preventDefault?.();
+                                    handleMentionSelect(mentionSelectedIndex);
+                                    return;
+                                }
+                                if (action === 'send') {
+                                    e.preventDefault?.();
+                                    void handleSend();
+                                    return;
                                 }
                             }}
                         />

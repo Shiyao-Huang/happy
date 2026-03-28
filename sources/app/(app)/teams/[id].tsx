@@ -1,9 +1,8 @@
 import React from 'react';
 import {
-    ActivityIndicator,
     Platform,
     Pressable,
-    ScrollView,
+    StyleSheet,
     View,
     useWindowDimensions,
 } from 'react-native';
@@ -17,11 +16,10 @@ import {
     trackTeamViewed,
 } from '@/track';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
-import { storage, useArtifact, useAllMachines, useProfile, useIsDataReady, useArtifacts } from '@/sync/storage';
+import { storage, useArtifact, useAllMachines, useProfile, useIsDataReady, useArtifacts, useSocketStatus } from '@/sync/storage';
 import { useShallow } from 'zustand/react/shallow';
 import { sync } from '@/sync/sync';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { useUnistyles } from 'react-native-unistyles';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Modal } from '@/modal';
@@ -50,25 +48,39 @@ import { ExportTaskButton } from '@/components/team/ExportTaskButton';
 import { useTaskChatSync } from '@/hooks/useTaskChatSync';
 import type { TeamMessage } from '@/sync/teamMessageTypes';
 import { getSessionsForTask } from '@/-zen/model/taskSessionLink';
-import Color from 'color';
 import { syncKanbanStatusToTodo } from '@/-zen/model/ops';
 import { getCurrentAuth } from '@/auth/AuthContext';
 import { useAuth } from '@/auth/AuthContext';
 import { taskNeedsApproval } from '@/utils/taskHelpers';
 import { EvolutionSection } from '@/components/settings/EvolutionSection';
-import { FloatingIslandSidebar } from '@/components/layout/FloatingIslandSidebar';
 import { getThreeColumnShellTokens } from '@/components/layout/ThreeColumnShell';
 import { SidebarView } from '@/components/layout/SidebarView';
-import { getSessionName, getAgentPresenceVisual } from '@/utils/sessionUtils';
-import { buildTeamReturnPath, getSingleRouteParam, pushSessionRoute } from '@/utils/returnNavigation';
+import { buildTeamReturnPath, getSingleRouteParam } from '@/utils/returnNavigation';
 import { randomUUID } from '@/utils/uuid';
 import { t } from '@/text';
-import { formatTaskReference } from '@/utils/taskChatSync';
-import { applyDerivedLifecycleTimestamps } from '@/utils/teamLifecycle';
 import { getActiveTaskForSession } from '@/utils/teamActiveTask';
 import { compareTeamRosterEntries } from '@/utils/teamRoster';
 import { resolveStickyKanbanBoard } from '@/utils/teamBoardState';
 import { getServerUrl } from '@/sync/serverConfig';
+import { fetchBypassAgents, type BypassAgent } from '@/sync/apiEvolution';
+import { stylesheet } from './teamStyles';
+import {
+    STANDARD_SHELL_TABS,
+    SHELL_CONVERSATION_COLORS,
+    formatShellTime,
+    getMessagePreview,
+    splitPromptLines,
+} from '@/utils/teamUtils';
+import { KanbanBoardPanel } from '@/components/team/KanbanBoardPanel';
+import { useTeamReviews } from '@/hooks/useTeamReviews';
+import { useTeamLifecyclePersist } from '@/hooks/useTeamLifecyclePersist';
+import { useTaskChatBridge } from '@/hooks/useTaskChatBridge';
+import { useArtifactAutoInit } from '@/hooks/useArtifactAutoInit';
+import { TeamInfoSection } from '@/components/team/TeamInfoSection';
+import { WorkspaceSidebar } from '@/components/team/WorkspaceSidebar';
+import { BoardFallbackView } from '@/components/team/BoardFallbackView';
+import { MobileTeamMenu } from '@/components/team/MobileTeamMenu';
+import { getAgentPresenceVisual } from '@/utils/sessionUtils';
 
 type TeamStandardTab = 'chat' | 'board' | 'info' | 'evolution';
 
@@ -79,856 +91,6 @@ function isTeamStandardTab(value: string | undefined | null): value is TeamStand
 function buildTeamMemberSessionTag(teamId: string, memberId: string): string {
     return `team:${teamId}:member:${memberId}`;
 }
-
-const stylesheet = StyleSheet.create((theme) => ({
-    container: {
-        flex: 1,
-        backgroundColor: theme.colors.groupped.background,
-    },
-    loadingContainer: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    header: {
-        padding: 16,
-        backgroundColor: theme.colors.surface,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.divider,
-    },
-    title: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: theme.colors.text,
-        marginBottom: 4,
-    },
-    subtitle: {
-        fontSize: 14,
-        color: theme.colors.textSecondary,
-    },
-    boardContainer: {
-        flex: 1,
-        flexDirection: 'row',
-        padding: 16,
-    },
-    column: {
-        flex: 1,
-        backgroundColor: theme.colors.surface,
-        borderRadius: 12,
-        marginHorizontal: 6,
-        padding: 12,
-    },
-    columnHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 12,
-    },
-    columnTitle: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: theme.colors.text,
-    },
-    taskCount: {
-        fontSize: 12,
-        color: theme.colors.textSecondary,
-        backgroundColor: theme.colors.groupped.background,
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        borderRadius: 10,
-    },
-    taskCard: {
-        backgroundColor: theme.colors.groupped.background,
-        borderRadius: 8,
-        padding: 12,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        // Force card to fill column width and constrain children
-        width: '100%',
-    },
-    taskTitle: {
-        fontSize: 14,
-        color: theme.colors.text,
-        marginBottom: 4,
-        // Explicit width: 100% forces text to wrap within card boundaries
-        width: '100%',
-    },
-    taskAssignee: {
-        fontSize: 12,
-        color: theme.colors.textSecondary,
-        fontStyle: 'italic',
-    },
-    taskReporter: {
-        fontSize: 11,
-        color: theme.colors.textSecondary,
-        marginTop: 2,
-    },
-    taskCommentSummary: {
-        fontSize: 11,
-        color: theme.colors.text,
-        marginTop: 6,
-        lineHeight: 16,
-    },
-    taskHumanLockBadge: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        alignSelf: 'flex-start',
-        gap: 4,
-        marginTop: 8,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 999,
-        backgroundColor: 'rgba(255, 149, 0, 0.14)',
-    },
-    taskHumanLockText: {
-        fontSize: 10,
-        fontWeight: '600',
-        color: '#C26A00',
-    },
-    taskMeta: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginTop: 8,
-        paddingTop: 8,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.divider,
-    },
-    taskSessionsLink: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginRight: 12,
-    },
-    taskSessionsIcon: {
-        marginRight: 4,
-    },
-    taskSessionsText: {
-        fontSize: 11,
-        color: theme.colors.textSecondary,
-    },
-    taskPriority: {
-        fontSize: 10,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
-        borderRadius: 4,
-        overflow: 'hidden',
-    },
-    taskActiveExecution: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
-        borderRadius: 999,
-        backgroundColor: 'rgba(255, 149, 0, 0.12)',
-    },
-    taskActiveExecutionText: {
-        fontSize: 10,
-        fontWeight: '600',
-        color: '#FF9500',
-    },
-    addTaskButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 8,
-        marginTop: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        borderRadius: 8,
-        borderStyle: 'dashed',
-    },
-    addTaskText: {
-        fontSize: 14,
-        color: theme.colors.textSecondary,
-        marginLeft: 4,
-    },
-    // 🆕 Pending tasks banner styles
-    pendingBanner: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        padding: 12,
-        marginHorizontal: 16,
-        marginTop: 16,
-        borderWidth: 1,
-        borderRadius: 8,
-    },
-    pendingBannerText: {
-        flex: 1,
-        fontSize: 14,
-        marginLeft: 8,
-    },
-    pendingBannerButton: {
-        paddingHorizontal: 16,
-        paddingVertical: 6,
-        borderRadius: 6,
-    },
-    pendingBannerButtonText: {
-        color: '#FFFFFF',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    scrollContent: {
-        paddingBottom: 48
-    },
-    section: {
-        marginTop: 16,
-        backgroundColor: theme.colors.surface,
-        borderRadius: 12,
-        marginHorizontal: 16,
-        padding: 16,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-    },
-    sectionTitle: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: theme.colors.text,
-        marginBottom: 12,
-    },
-    memberCard: {
-        paddingVertical: 12,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.divider,
-    },
-    memberFirst: {
-        borderTopWidth: 0,
-        paddingTop: 4,
-    },
-    memberName: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: theme.colors.text,
-    },
-    memberMeta: {
-        fontSize: 13,
-        color: theme.colors.textSecondary,
-        marginTop: 4,
-    },
-    pill: {
-        alignSelf: 'flex-start',
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 999,
-        backgroundColor: theme.colors.groupped.background,
-        marginTop: 8,
-    },
-    pillText: {
-        fontSize: 12,
-        fontWeight: '500',
-        color: theme.colors.textSecondary,
-    },
-    roleCard: {
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.divider,
-        paddingTop: 16,
-        marginTop: 16,
-    },
-    roleTitle: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: theme.colors.text,
-    },
-    roleSummary: {
-        fontSize: 13,
-        color: theme.colors.textSecondary,
-        marginTop: 6,
-        lineHeight: 20,
-    },
-    metaLabel: {
-        marginTop: 12,
-        fontSize: 12,
-        fontWeight: '600',
-        color: theme.colors.textSecondary,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-    },
-    bulletItem: {
-        fontSize: 13,
-        color: theme.colors.text,
-        marginTop: 6,
-        lineHeight: 18,
-    },
-    agreementsRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 12,
-    },
-    agreementCard: {
-        flex: 1,
-        minWidth: 150,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        borderRadius: 10,
-        padding: 12,
-        marginTop: 12,
-    },
-    agreementTitle: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: theme.colors.textSecondary,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        marginBottom: 6,
-    },
-    agreementText: {
-        fontSize: 13,
-        color: theme.colors.text,
-        lineHeight: 18,
-    },
-    showcaseCard: {
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        borderRadius: 14,
-        padding: 14,
-        marginTop: 12,
-        backgroundColor: theme.colors.surface,
-    },
-    showcaseEyebrow: {
-        fontSize: 11,
-        fontWeight: '700',
-        color: theme.colors.textSecondary,
-        textTransform: 'uppercase',
-        letterSpacing: 0.6,
-        marginBottom: 8,
-    },
-    showcaseTitle: {
-        fontSize: 16,
-        fontWeight: '700',
-        color: theme.colors.text,
-    },
-    showcaseLead: {
-        fontSize: 13,
-        color: theme.colors.textSecondary,
-        marginTop: 8,
-        lineHeight: 19,
-    },
-    promptLine: {
-        fontSize: 13,
-        color: theme.colors.text,
-        lineHeight: 19,
-        marginTop: 8,
-    },
-    reviewMetricsRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 10,
-        marginTop: 12,
-    },
-    reviewMetricCard: {
-        minWidth: 120,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        backgroundColor: theme.colors.groupped.background,
-    },
-    reviewMetricLabel: {
-        fontSize: 11,
-        fontWeight: '600',
-        color: theme.colors.textSecondary,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-    },
-    reviewMetricValue: {
-        fontSize: 18,
-        fontWeight: '700',
-        color: theme.colors.text,
-        marginTop: 6,
-    },
-    reviewMetaText: {
-        fontSize: 12,
-        color: theme.colors.textSecondary,
-        marginTop: 10,
-        lineHeight: 18,
-    },
-    reviewItemCard: {
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        borderRadius: 12,
-        padding: 12,
-        marginTop: 10,
-        backgroundColor: theme.colors.surface,
-    },
-    reviewItemHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: 8,
-    },
-    reviewItemTitle: {
-        fontSize: 13,
-        fontWeight: '600',
-        color: theme.colors.text,
-        flex: 1,
-    },
-    reviewItemRating: {
-        fontSize: 13,
-        fontWeight: '700',
-    },
-    reviewItemComment: {
-        fontSize: 13,
-        color: theme.colors.textSecondary,
-        lineHeight: 19,
-        marginTop: 8,
-    },
-    emptyState: {
-        fontSize: 13,
-        color: theme.colors.textSecondary,
-        fontStyle: 'italic',
-    },
-    desktopPanelHeader: {
-        paddingHorizontal: 24,
-        paddingVertical: 14,
-        height: 54,
-        borderBottomWidth: 1,
-        borderBottomColor: '#DEE8EE',
-        zIndex: 10,
-    },
-    desktopHeaderTopRow: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    desktopTabsRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        height: '100%',
-        minWidth: 0,
-    },
-    desktopTab: {
-        width: 80,
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100%',
-    },
-    desktopTabActive: {
-        borderRadius: 999,
-        shadowColor: '#7A8C9B',
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.07,
-        shadowRadius: 10,
-        elevation: 2,
-    },
-    desktopTabText: {
-        fontSize: 13,
-    },
-    desktopPanelBody: {
-        flex: 1,
-        minHeight: 0,
-        minWidth: 0,
-    },
-    headerActionRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    agentsButton: {
-        height: 36,
-        borderRadius: 18,
-        paddingHorizontal: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        borderWidth: 1,
-    },
-    agentsButtonText: {
-        fontSize: 12,
-        fontWeight: '700',
-    },
-    desktopMenu: {
-        position: 'absolute',
-        top: 52,
-        right: 22,
-        minWidth: 188,
-        borderRadius: 16,
-        overflow: 'hidden',
-        borderWidth: 1,
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.12,
-        shadowRadius: 24,
-        elevation: 6,
-        zIndex: 1000,
-    },
-    desktopMenuItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
-    },
-    desktopMenuDivider: {
-        height: 1,
-    },
-    mobileHeaderTopRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-        marginBottom: 12,
-    },
-    mobileWorkspaceButton: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        backgroundColor: theme.colors.groupped.background,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    mobileWorkspaceCopy: {
-        flex: 1,
-        minWidth: 0,
-    },
-    mobileWorkspaceTitle: {
-        fontSize: 13,
-        fontWeight: '600',
-        color: theme.colors.text,
-    },
-    mobileWorkspaceSubtitle: {
-        fontSize: 11,
-        color: theme.colors.textSecondary,
-        marginTop: 2,
-    },
-    mobileHeaderIconButton: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: theme.colors.groupped.background,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-    },
-    mobileWorkspaceBackdrop: {
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: 'rgba(10, 16, 22, 0.16)',
-        zIndex: 1200,
-    },
-    mobileWorkspacePanel: {
-        position: 'absolute',
-        top: 82,
-        left: 12,
-        bottom: 16,
-        borderRadius: 22,
-        overflow: 'hidden',
-        backgroundColor: '#F8FBFD',
-        borderWidth: 1,
-        borderColor: '#D9E4EA',
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 12 },
-        shadowOpacity: 0.14,
-        shadowRadius: 32,
-        elevation: 12,
-        zIndex: 1300,
-    },
-    floatingPanelBackdrop: {
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 998,
-    },
-    floatingPanelAnchor: {
-        position: 'absolute',
-        left: 16,
-        right: 16,
-        alignItems: 'flex-end',
-        zIndex: 999,
-    },
-}));
-
-const withAlpha = (color: string, alpha: number): string => {
-    try {
-        return Color(color).alpha(alpha).rgb().string();
-    } catch {
-        return color;
-    }
-};
-
-const STANDARD_SHELL_TABS = [
-    { id: 'chat', label: 'Chat' },
-    { id: 'board', label: 'Board' },
-    { id: 'info', label: 'Info' },
-    { id: 'evolution', label: 'Evolution' },
-] as const;
-
-const SHELL_ROLE_COLORS: Record<string, string> = {
-    master: '#007AFF',
-    orchestrator: '#007AFF',
-    builder: '#FF9500',
-    implementer: '#FF9500',
-    qa: '#5856D6',
-    'qa-engineer': '#5856D6',
-    framer: '#34C759',
-    architect: '#34C759',
-    reviewer: '#8A7F74',
-    observer: '#8A7F74',
-    // Extended roles
-    researcher: '#AF52DE',
-    supervisor: '#FF2D55',
-    'help-agent': '#FF6B6B',
-    'org-manager': '#5AC8FA',
-    'agent-builder': '#FFD60A',
-    'content-strategist': '#30D158',
-    'data-analyst': '#64D2FF',
-    'seo-specialist': '#FF9F0A',
-};
-
-const SHELL_CONVERSATION_COLORS = ['#7AA585', '#8F99C1', '#E8845A', '#B89A6F', '#6886A3'];
-
-function getRoleAccent(roleId?: string): string {
-    if (!roleId) {
-        return '#8A7F74';
-    }
-
-    return SHELL_ROLE_COLORS[roleId.toLowerCase()] ?? '#8A7F74';
-}
-
-function formatShellTime(timestamp: number): string {
-    const now = new Date();
-    const value = new Date(timestamp);
-
-    if (now.toDateString() === value.toDateString()) {
-        return value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    return value.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
-}
-
-function getMessagePreview(message: TeamMessage): string {
-    const source = (message.shortContent || message.content || '').replace(/\s+/g, ' ').trim();
-    if (!source) {
-        return 'No recent message';
-    }
-    return source.length > 42 ? `${source.slice(0, 42)}...` : source;
-}
-
-function splitPromptLines(text: string): string[] {
-    return text
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean);
-}
-
-type TeamScorecard = {
-    averageRating?: number;
-    reviewCount?: number;
-    cumulativeCode?: number;
-    cumulativeQuality?: number;
-    sourceScoreTotals?: {
-        user?: number;
-        master?: number;
-        system?: number;
-    };
-    lastReviewedAt?: string | number | null;
-};
-
-type TeamPublicReview = {
-    id?: string;
-    rating?: number;
-    codeScore?: number;
-    qualityScore?: number;
-    source?: string;
-    roleIds?: string[];
-    comment?: string;
-    createdAt?: string | number;
-};
-
-function formatReviewDate(value?: string | number): string {
-    if (value == null) return '';
-    try {
-        return new Date(value).toLocaleDateString();
-    } catch {
-        return '';
-    }
-}
-
-function getHumanStatusLockLabel(lock?: HumanStatusLock | null): string | null {
-    if (!lock) return null;
-    const lockedBy = lock.lockedByDisplayName || lock.lockedBySessionId || 'Human';
-    if (lock.mode === 'manual-status') {
-        return `${lockedBy} manually locked status`;
-    }
-    if (lock.mode === 'editing') {
-        return `${lockedBy} is editing`;
-    }
-    return `${lockedBy} is viewing`;
-}
-
-const KanbanBoardPanel = React.memo(function KanbanBoardPanel({
-    styles,
-    theme,
-    tasks,
-    approvedTasks,
-    columns,
-    taskSessionLinks,
-    sessionLookup,
-    matchesColumn,
-    onBoardSignalPress,
-    onOpenTask,
-    onMoveTask,
-    onAddTask,
-}: {
-    styles: typeof stylesheet;
-    theme: any;
-    tasks: KanbanTask[];
-    approvedTasks: KanbanTask[];
-    columns: KanbanColumn[];
-    taskSessionLinks: Map<string, { sessionId: string; title: string; linkedAt: number }[]>;
-    sessionLookup: Map<string, any>;
-    matchesColumn: (task: KanbanTask, columnId: string) => boolean;
-    onBoardSignalPress?: (signal: 'running' | 'deciding' | 'blocked') => void;
-    onOpenTask: (task: KanbanTask) => void;
-    onMoveTask: (task: KanbanTask) => void;
-    onAddTask: (columnId: string) => void;
-}) {
-    return (
-        <>
-            <TeamStatusBar tasks={tasks} onSignalPress={onBoardSignalPress} />
-
-            <View style={styles.boardContainer}>
-                {columns.map((column) => (
-                    <View key={column.id} style={styles.column}>
-                        <View style={styles.columnHeader}>
-                            <Text style={styles.columnTitle}>{column.title}</Text>
-                            <Text style={styles.taskCount}>
-                                {approvedTasks.filter((task) => matchesColumn(task, column.id)).length}
-                            </Text>
-                        </View>
-
-                        <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 4 }}>
-                            {approvedTasks
-                                .filter((task) => matchesColumn(task, column.id))
-                                .map((task) => {
-                                    const linkedSessions = taskSessionLinks.get(task.id) || [];
-                                    const sessionCount = linkedSessions.length;
-                                    const activeLink = task.executionLinks?.find((link) => link.status === 'active');
-                                    const activeAgentSession = activeLink ? sessionLookup.get(activeLink.sessionId) : null;
-                                    const activeAgentName = activeAgentSession
-                                        ? getSessionName(activeAgentSession)
-                                        : activeLink?.sessionId?.slice(0, 8) ?? null;
-                                    const assigneeSession = task.assigneeId ? sessionLookup.get(task.assigneeId) : null;
-                                    const assigneeName = assigneeSession
-                                        ? getSessionName(assigneeSession)
-                                        : task.assigneeId?.slice(0, 8) ?? null;
-                                    const reporterSession = task.reporterId ? sessionLookup.get(task.reporterId) : null;
-                                    const reporterName = reporterSession
-                                        ? getSessionName(reporterSession)
-                                        : task.reporterId?.slice(0, 8) ?? null;
-                                    const lastComment = task.comments?.length ? task.comments[task.comments.length - 1] : null;
-                                    const lastCommentAuthor = lastComment
-                                        ? (lastComment.authorDisplayName
-                                            || lastComment.authorRole
-                                            || lastComment.authorSessionId?.slice(0, 8)
-                                            || 'Unknown')
-                                        : null;
-                                    const humanLockLabel = getHumanStatusLockLabel(task.humanStatusLock);
-
-                                    return (
-                                        <Pressable
-                                            key={task.id}
-                                            style={styles.taskCard}
-                                            onPress={() => onOpenTask(task)}
-                                            onLongPress={() => onMoveTask(task)}
-                                        >
-                                            <Text style={styles.taskTitle}>{task.title}</Text>
-                                            {assigneeName ? (
-                                                <Text style={styles.taskAssignee}>Assignee: @{assigneeName}</Text>
-                                            ) : null}
-                                            {reporterName ? (
-                                                <Text style={styles.taskReporter}>Reporter: {reporterName}</Text>
-                                            ) : null}
-                                            {lastComment && lastCommentAuthor ? (
-                                                <Text style={styles.taskCommentSummary} numberOfLines={2}>
-                                                    {lastCommentAuthor}: {lastComment.content}
-                                                </Text>
-                                            ) : null}
-                                            {humanLockLabel ? (
-                                                <View style={styles.taskHumanLockBadge}>
-                                                    <Ionicons name="hand-left-outline" size={12} color="#C26A00" />
-                                                    <Text style={styles.taskHumanLockText}>{humanLockLabel}</Text>
-                                                </View>
-                                            ) : null}
-
-                                            {(sessionCount > 0 || task.priority || activeAgentName) && (
-                                                <View style={styles.taskMeta}>
-                                                    {activeAgentName && (
-                                                        <View style={styles.taskActiveExecution}>
-                                                            <Ionicons name="flash" size={11} color="#FF9500" />
-                                                            <Text style={styles.taskActiveExecutionText}>{activeAgentName}</Text>
-                                                        </View>
-                                                    )}
-                                                    {sessionCount > 0 && (
-                                                        <View style={styles.taskSessionsLink}>
-                                                            <Ionicons
-                                                                name="chatbubble-outline"
-                                                                size={14}
-                                                                color={theme.colors.textSecondary}
-                                                                style={styles.taskSessionsIcon}
-                                                            />
-                                                            <Text style={styles.taskSessionsText}>
-                                                                {sessionCount} {sessionCount === 1 ? 'session' : 'sessions'}
-                                                            </Text>
-                                                        </View>
-                                                    )}
-                                                    {task.priority && (
-                                                        <View
-                                                            style={[
-                                                                styles.taskPriority,
-                                                                {
-                                                                    backgroundColor: task.priority === 'high' || task.priority === 'urgent'
-                                                                        ? withAlpha(theme.colors.textDestructive, 0.125)
-                                                                        : task.priority === 'medium'
-                                                                            ? withAlpha(theme.colors.warning, 0.125)
-                                                                            : withAlpha(theme.colors.success, 0.125),
-                                                                },
-                                                            ]}
-                                                        >
-                                                            <Text
-                                                                style={[
-                                                                    styles.taskSessionsText,
-                                                                    {
-                                                                        color: task.priority === 'high' || task.priority === 'urgent'
-                                                                            ? theme.colors.textDestructive
-                                                                            : task.priority === 'medium'
-                                                                                ? theme.colors.warning
-                                                                                : theme.colors.success,
-                                                                    },
-                                                                ]}
-                                                            >
-                                                                {task.priority}
-                                                            </Text>
-                                                        </View>
-                                                    )}
-                                                </View>
-                                            )}
-                                        </Pressable>
-                                    );
-                                })}
-
-                            <Pressable
-                                style={styles.addTaskButton}
-                                onPress={() => onAddTask(column.id)}
-                            >
-                                <Ionicons name="add" size={16} color={theme.colors.textSecondary} />
-                                <Text style={styles.addTaskText}>Add Task</Text>
-                            </Pressable>
-                        </ScrollView>
-                    </View>
-                ))}
-            </View>
-        </>
-    );
-});
 
 export default function TeamDashboardScreen() {
     const { id, roomId: roomIdParam, tab } = useLocalSearchParams();
@@ -971,7 +133,6 @@ export default function TeamDashboardScreen() {
     const [showTaskDetail, setShowTaskDetail] = React.useState(false);
     const [showNewTaskModal, setShowNewTaskModal] = React.useState(false);
     const [newTaskStatus, setNewTaskStatus] = React.useState('todo');
-    const [chatComposerPrefill, setChatComposerPrefill] = React.useState<{ text: string; token: number } | null>(null);
     const [showApprovalModal, setShowApprovalModal] = React.useState(false); // 🆕
     const [teamMessages, setTeamMessages] = React.useState<TeamMessage[]>([]);
     const [showMenu, setShowMenu] = React.useState(false);
@@ -981,11 +142,8 @@ export default function TeamDashboardScreen() {
     const [selectedAgentId, setSelectedAgentId] = React.useState<string | null>(null);
     const [selectedConversationId, setSelectedConversationId] = React.useState<string | null>(null);
     const [isRecoveringTeam, setIsRecoveringTeam] = React.useState(false);
-    const [teamScorecard, setTeamScorecard] = React.useState<TeamScorecard | null>(null);
-    const [teamPublicReviews, setTeamPublicReviews] = React.useState<TeamPublicReview[]>([]);
-    const [teamReviewLoading, setTeamReviewLoading] = React.useState(false);
-    const [autoInitAttempted, setAutoInitAttempted] = React.useState(false);
-    const lifecyclePersistTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const socketStatus = useSocketStatus();
+    const [bypassAgents, setBypassAgents] = React.useState<BypassAgent[]>([]);
     const lastKnownKanbanBoardRef = React.useRef<KanbanBoard | null>(null);
     const unavailableTeamMissesRef = React.useRef(0);
     const unavailableTeamRedirectedRef = React.useRef(false);
@@ -1011,6 +169,40 @@ export default function TeamDashboardScreen() {
             };
         }
     }, [artifact?.body]);
+
+    const { teamScorecard, teamPublicReviews, teamReviewLoading } = useTeamReviews(teamId, isAuthenticated);
+    useTeamLifecyclePersist(artifact, parsedArtifactBoard.board, teamMessages, allSessions);
+
+    React.useEffect(() => {
+        let cancelled = false;
+
+        const loadBypassAgents = async () => {
+            const auth = getCurrentAuth();
+            if (!auth?.credentials || !teamId) {
+                if (!cancelled) {
+                    setBypassAgents([]);
+                }
+                return;
+            }
+
+            try {
+                const result = await fetchBypassAgents(auth.credentials, teamId);
+                if (!cancelled) {
+                    setBypassAgents(result.agents || []);
+                }
+            } catch {
+                if (!cancelled) {
+                    setBypassAgents([]);
+                }
+            }
+        };
+
+        void loadBypassAgents();
+        return () => {
+            cancelled = true;
+        };
+    }, [teamId, isAuthenticated]);
+
     const artifactRoomId = React.useMemo(() => {
         return parsedArtifactBoard.board?.roomId;
     }, [parsedArtifactBoard.board]);
@@ -1140,124 +332,17 @@ export default function TeamDashboardScreen() {
         } as any);
     }, [roomId, router, teamId]);
 
-    const redirectUnavailableTeam = React.useCallback(() => {
-        if (desktopBridge || unavailableTeamRedirectedRef.current) {
-            return;
-        }
-
-        unavailableTeamRedirectedRef.current = true;
-        console.warn(`Redirecting away from unavailable team ${teamId}`);
-        router.replace('/teams');
-    }, [desktopBridge, router, teamId]);
-
-    const refreshTeamArtifact = React.useCallback(async () => {
-        if (desktopBridge || !teamId || !isAuthenticated) {
-            return;
-        }
-
-        try {
-            const refreshedArtifact = await sync.fetchArtifactWithBody(teamId);
-            if (refreshedArtifact) {
-                unavailableTeamMissesRef.current = 0;
-                return;
-            }
-
-            if (autoInitAttempted && !hasLocalTeamSessions) {
-                unavailableTeamMissesRef.current += 1;
-                if (unavailableTeamMissesRef.current >= 2) {
-                    redirectUnavailableTeam();
-                }
-            }
-        } catch (error) {
-            console.error(`Failed to refresh team artifact ${teamId}:`, error);
-        }
-    }, [autoInitAttempted, desktopBridge, hasLocalTeamSessions, isAuthenticated, redirectUnavailableTeam, teamId]);
-
-    useFocusEffect(
-        React.useCallback(() => {
-            if (desktopBridge || !teamId || !isAuthenticated) {
-                return undefined;
-            }
-
-            void refreshTeamArtifact();
-
-            const interval = setInterval(() => {
-                void refreshTeamArtifact();
-            }, 5000);
-
-            return () => clearInterval(interval);
-        }, [desktopBridge, isAuthenticated, refreshTeamArtifact, teamId]),
-    );
-
-    React.useEffect(() => {
-        if (desktopBridge) {
-            return;
-        }
-        if (artifact && artifact.body === undefined && !isLoading) {
-            setIsLoading(true);
-            sync.fetchArtifactWithBody(artifact.id)
-                .finally(() => setIsLoading(false));
-        }
-    }, [artifact, isLoading, desktopBridge]);
-
-    // Auto-initialize Board if artifact doesn't exist (CLI-created teams)
-    React.useEffect(() => {
-        // Wait for data to be ready before auto-initializing
-        if (desktopBridge || isLoading || autoInitAttempted || !isDataReady || !isAuthenticated) {
-            return;
-        }
-        // If artifact is null (data loaded but artifact doesn't exist), auto-initialize
-        if (artifact === null) {
-            setAutoInitAttempted(true);
-            setIsLoading(true);
-            console.log(`🔍 Checking server for existing Board for team ${teamId}...`);
-
-            sync.fetchArtifactWithBody(teamId)
-                .then((existingArtifact) => {
-                    if (existingArtifact) {
-                        console.log(`✅ Found existing Board for team ${teamId} on server`);
-                        return;
-                    }
-
-                    console.log(`🔧 Auto-initializing Board for team ${teamId}...`);
-                    const initialBoard: KanbanBoard = {
-                        ...DEFAULT_KANBAN_BOARD,
-                        tasks: [],
-                        team: {
-                            roles: DEFAULT_TEAM_ROLES,
-                            agreements: DEFAULT_TEAM_AGREEMENTS,
-                            members: []
-                        }
-                    };
-
-                    return sync.createArtifact(
-                        'Team',
-                        JSON.stringify(initialBoard, null, 2),
-                        [],
-                        false,
-                        'team',
-                        teamId
-                    ).then(() => {
-                        console.log(`✅ Board auto-initialized for team ${teamId}`);
-                        return sync.fetchArtifactWithBody(teamId);
-                    }).then((createdArtifact) => {
-                        if (createdArtifact) {
-                            unavailableTeamMissesRef.current = 0;
-                        }
-                    });
-                })
-                .catch((error) => {
-                    console.error('Failed to ensure Board exists:', error);
-                    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-                    if (message.includes('already exists') || message.includes('failed to create artifact: 409')) {
-                        redirectUnavailableTeam();
-                    }
-                })
-                .finally(() => {
-                    setIsLoading(false);
-                });
-        }
-    }, [artifact, teamId, desktopBridge, isLoading, autoInitAttempted, isAuthenticated, isDataReady, redirectUnavailableTeam]);
+    const { autoInitAttempted, redirectUnavailableTeam } = useArtifactAutoInit({
+        teamId,
+        artifact,
+        isAuthenticated,
+        desktopBridge,
+        hasLocalTeamSessions,
+        isDataReady,
+        isLoading,
+        setIsLoading,
+        router: router as any,
+    });
 
     // Helper to get session IDs from artifact body
     const getSessionIds = React.useCallback((): string[] => {
@@ -1506,6 +591,7 @@ export default function TeamDashboardScreen() {
                         await sync.addTeamMember(teamId, member.sessionId, member.roleId, sessionName, {
                             memberId,
                             sessionTag,
+                            candidateId: member.candidateId,
                             specId: member.specId,
                             customPrompt: member.customPrompt,
                             parentSessionId: member.parentSessionId,
@@ -1561,6 +647,7 @@ export default function TeamDashboardScreen() {
                     await sync.addTeamMember(teamId, recoveredSessionId, member.roleId, sessionName, {
                         memberId,
                         sessionTag,
+                        candidateId: member.candidateId,
                         specId: member.specId,
                         customPrompt: member.customPrompt,
                         parentSessionId: member.parentSessionId,
@@ -1711,6 +798,16 @@ export default function TeamDashboardScreen() {
             ]
         );
     }, [handleDeleteSessionMember, handleRenameSessionMember, handleRemoveTeamMember]);
+
+    const teamDisplayName = artifact?.title || desktopRoom?.name || 'Team';
+
+    const handleOpenAgentLibrary = React.useCallback(() => {
+        setShowAgentLibrary(true);
+    }, []);
+
+    const handleOpenAgentRosterSession = React.useCallback((sessionId: string) => {
+        router.push(`/session/${sessionId}` as any);
+    }, [router]);
 
     const handleTaskUpdate = React.useCallback(async (taskId: string, updates: Partial<KanbanTask>) => {
         if (desktopBridge && roomId) {
@@ -1886,68 +983,6 @@ export default function TeamDashboardScreen() {
         columns: kanbanData.columns,
     });
 
-    React.useEffect(() => {
-        if (!artifact?.body || !parsedArtifactBoard.board?.team?.members?.length) {
-            return;
-        }
-
-        const processStartedBySessionId = new Map<string, number>();
-        for (const session of allSessions) {
-            const processStartedAt = session.metadata?.processStartedAt;
-            if (typeof processStartedAt === 'number') {
-                processStartedBySessionId.set(session.id, processStartedAt);
-            }
-        }
-
-        const { members: nextMembers, changed } = applyDerivedLifecycleTimestamps(
-            parsedArtifactBoard.board.team.members,
-            teamMessages,
-            processStartedBySessionId,
-        );
-
-        if (!changed) {
-            return;
-        }
-
-        const nextBoard: KanbanBoard = {
-            ...parsedArtifactBoard.board,
-            team: {
-                ...parsedArtifactBoard.board.team,
-                members: nextMembers,
-            },
-        };
-
-        if (lifecyclePersistTimerRef.current) {
-            clearTimeout(lifecyclePersistTimerRef.current);
-        }
-
-        lifecyclePersistTimerRef.current = setTimeout(() => {
-            sync.updateArtifact(
-                artifact.id,
-                artifact.title,
-                JSON.stringify(nextBoard, null, 2),
-                artifact.sessions,
-                artifact.draft,
-                artifact.type,
-            ).catch((error) => {
-                console.error('Failed to persist derived team lifecycle timestamps:', error);
-            }).finally(() => {
-                lifecyclePersistTimerRef.current = null;
-            });
-        }, 250);
-
-        return () => {
-            if (lifecyclePersistTimerRef.current) {
-                clearTimeout(lifecyclePersistTimerRef.current);
-                lifecyclePersistTimerRef.current = null;
-            }
-        };
-    }, [
-        artifact?.id,
-        parsedArtifactBoard.board,
-        teamMessages,
-    ]);
-
     const normalizeStatus = React.useCallback((status: string): string => {
         const statusMap: Record<string, string> = {
             'in_progress': 'in-progress',
@@ -2083,55 +1118,6 @@ export default function TeamDashboardScreen() {
     const teamPromptTitle = teamPromptLines[0] ?? '';
     const teamPromptBody = teamPromptLines.slice(teamPromptTitle ? 1 : 0);
 
-    React.useEffect(() => {
-        const credentials = sync.getCredentials();
-        if (!teamId || !credentials?.token || !isAuthenticated) {
-            setTeamScorecard(null);
-            setTeamPublicReviews([]);
-            setTeamReviewLoading(false);
-            return;
-        }
-
-        let cancelled = false;
-        const headers = {
-            Authorization: `Bearer ${credentials.token}`,
-            'Content-Type': 'application/json',
-        };
-        const encodedTeamId = encodeURIComponent(teamId);
-
-        async function loadTeamReviews() {
-            setTeamReviewLoading(true);
-            const [scoreResult, reviewsResult] = await Promise.allSettled([
-                fetch(`${getServerUrl()}/v1/teams/${encodedTeamId}/score`, { headers }),
-                fetch(`${getServerUrl()}/v1/teams/${encodedTeamId}/reviews?limit=3`, { headers }),
-            ]);
-
-            if (cancelled) return;
-
-            const nextScore = scoreResult.status === 'fulfilled' && scoreResult.value.ok
-                ? await scoreResult.value.json() as TeamScorecard
-                : null;
-            const nextReviews = reviewsResult.status === 'fulfilled' && reviewsResult.value.ok
-                ? ((await reviewsResult.value.json()) as { reviews?: TeamPublicReview[] }).reviews ?? []
-                : [];
-
-            setTeamScorecard(nextScore);
-            setTeamPublicReviews(nextReviews);
-            setTeamReviewLoading(false);
-        }
-
-        loadTeamReviews().catch(() => {
-            if (cancelled) return;
-            setTeamScorecard(null);
-            setTeamPublicReviews([]);
-            setTeamReviewLoading(false);
-        });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [isAuthenticated, teamId]);
-
     const roster = React.useMemo(() => {
         const members = kanbanData.team?.members ?? [];
         const assignedIds = new Set(members.map(m => m.sessionId));
@@ -2181,67 +1167,44 @@ export default function TeamDashboardScreen() {
     }, [kanbanData.team?.members, artifact?.sessions, sessionLookup, roleDefinitions, kanbanData.tasks]);
 
     const systemRoster = React.useMemo(() => {
-        return roster.filter((entry) => {
+        const rosterSystemEntries = roster.filter((entry) => {
             const roleId = entry.member.roleId || entry.session?.metadata?.role || '';
             return roleId === 'supervisor' || roleId === 'help-agent';
         });
+        const existingIds = new Set(rosterSystemEntries.map((entry) => entry.member.sessionId));
+        const bypassEntries = bypassAgents
+            .filter((agent) => (agent.roleId === 'supervisor' || agent.roleId === 'help-agent') && !existingIds.has(agent.agentId))
+            .map((agent) => ({
+                member: {
+                    sessionId: agent.agentId,
+                    roleId: agent.roleId,
+                    displayName: agent.roleId === 'supervisor' ? 'Supervisor' : 'Help Agent',
+                    executionPlane: 'bypass',
+                    runtimeType: 'claude',
+                },
+                session: undefined,
+                role: undefined,
+            }));
+
+        return [...rosterSystemEntries, ...bypassEntries];
+    }, [roster, bypassAgents]);
+
+    /** Sessions map for AgentRoster — maps sessionId → { active, activeAt } */
+    const agentRosterSessions = React.useMemo(() => {
+        const map = new Map<string, { active: boolean; activeAt: number }>();
+        for (const entry of roster) {
+            if (entry.session) {
+                map.set(entry.member.sessionId, entry.session);
+            }
+        }
+        return map;
     }, [roster]);
 
-    const agentRoster = React.useMemo(() => {
-        return roster.filter((entry) => {
-            const roleId = entry.member.roleId || entry.session?.metadata?.role || '';
-            return !!roleId && roleId !== 'user';
-        });
-    }, [roster]);
-
-    const teamDisplayName = artifact?.title || desktopRoom?.name || 'Team';
-
-    const handleOpenAgentRosterSession = React.useCallback((sessionId: string) => {
-        const entry = agentRoster.find((candidate) => candidate.member.sessionId === sessionId);
-        if (!entry) return;
-
-        setShowAgentsPopover(false);
-        setSelectedAgentId(sessionId);
-        pushSessionRoute(router, {
-            id: sessionId,
-            teamId,
-            teamName: teamDisplayName,
-            roleName: entry.session?.metadata?.role || entry.role?.id || '',
-            returnTo: teamReturnTo,
-        });
-    }, [agentRoster, router, teamDisplayName, teamId, teamReturnTo]);
-
-    const handleOpenAgentLibrary = React.useCallback(() => {
-        setShowMenu(false);
-        setShowWorkspaceDrawer(false);
-        setShowAgentsPopover(false);
-        setShowAgentLibrary(true);
-    }, []);
-
-    // 🆕 Discuss 按钮处理函数：切换到 Chat 并预填 @mention 草稿
-    const handleDiscussTask = React.useCallback((task: KanbanTask) => {
-        const assigneeEntry = task.assigneeId
-            ? roster.find((entry) => entry.member.sessionId === task.assigneeId)
-            : null;
-        const masterEntry = roster.find((entry) => {
-            const roleId = entry.role?.id || entry.member.roleId || entry.session?.metadata?.role;
-            return roleId === 'master';
-        });
-
-        const mentionTarget = assigneeEntry
-            ? (assigneeEntry.role?.id || assigneeEntry.member.roleId || assigneeEntry.member.displayName || 'master')
-            : (masterEntry?.role?.id || masterEntry?.member.roleId || 'master');
-
-        const mentionText = `@${String(mentionTarget).replace(/\s+/g, '-')}`;
-        const draft = `${mentionText} Let's discuss ${formatTaskReference(task)} (${task.title}) `;
-
-        handleTaskDetailClose();
-        selectTab('chat');
-        setChatComposerPrefill({
-            text: draft,
-            token: Date.now(),
-        });
-    }, [handleTaskDetailClose, roster, selectTab]);
+    const { handleDiscussTask, chatComposerPrefill } = useTaskChatBridge(
+        roster,
+        handleTaskDetailClose,
+        selectTab,
+    );
 
     const timelineEvents = React.useMemo(() => {
         return [...kanbanData.tasks]
@@ -2274,9 +1237,9 @@ export default function TeamDashboardScreen() {
         }).length;
 
         return {
-            decision: pendingTasks.length || undefined,
-            working: workingCount || undefined,
-            review: reviewCount || undefined,
+            decision: pendingTasks.length || 0,
+            working: workingCount || 0,
+            review: reviewCount || 0,
         };
     }, [approvedTasks, normalizeStatus, pendingTasks.length]);
 
@@ -2386,6 +1349,11 @@ export default function TeamDashboardScreen() {
     const isArtifactParseError = !desktopBridge && !!artifact?.body && !!parsedArtifactBoard.parseError;
     const isAuthMissing = !desktopBridge && !isAuthenticated;
     const shouldShowBoardFallback = isAuthMissing || isMissingDesktopRoom || isMissingDesktopBoard || isMissingArtifact || isArtifactParseError;
+    const isOrgManagerInitializing = !desktopBridge
+        && isLoading
+        && autoInitAttempted
+        && !hasLocalTeamSessions
+        && !artifact?.body;
     const boardFallbackTitle = isAuthMissing
         ? 'Authentication Required'
         : isArtifactParseError
@@ -2469,171 +1437,6 @@ export default function TeamDashboardScreen() {
         handleAddTask,
         handleTasksImported,
     ]);
-
-    const renderInfo = () => (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Team Information</Text>
-                {teamPromptLines.length > 0 ? (
-                    <View style={styles.showcaseCard}>
-                        <Text style={styles.showcaseEyebrow}>Shared team instructions</Text>
-                        <Text style={styles.showcaseTitle}>{teamPromptTitle || 'Team System Prompt'}</Text>
-                        {teamPromptBody.map((line, index) => (
-                            <Text key={`${line}-${index}`} style={styles.promptLine}>
-                                {line}
-                            </Text>
-                        ))}
-                        {teamBootObjective ? (
-                            <Text style={styles.showcaseLead}>
-                                {t('newTeam.teamGoalLabel')}: {teamBootObjective}
-                            </Text>
-                        ) : null}
-                    </View>
-                ) : null}
-                {!teamPromptLines.length && teamBootObjective ? (
-                    <View style={styles.roleCard}>
-                        <Text style={styles.roleTitle}>{t('newTeam.teamGoalLabel')}</Text>
-                        <Text style={styles.roleSummary}>{teamBootObjective}</Text>
-                    </View>
-                ) : null}
-                <View style={styles.roleCard}>
-                    <Text style={styles.roleTitle}>Goal</Text>
-                    <Text style={styles.roleSummary}>
-                        {(kanbanData.team as any)?.goal || (kanbanData.team as any)?.mission || 'No goal set'}
-                    </Text>
-                </View>
-
-                {(teamReviewLoading || teamScorecard || teamPublicReviews.length > 0) ? (
-                    <>
-                        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>{t('agents.feedbackSection')}</Text>
-                        {teamReviewLoading ? (
-                            <View style={styles.roleCard}>
-                                <Text style={styles.roleSummary}>Loading public team reviews…</Text>
-                            </View>
-                        ) : null}
-                        {teamScorecard ? (
-                            <View style={styles.showcaseCard}>
-                                <Text style={styles.showcaseEyebrow}>Team reputation</Text>
-                                <Text style={styles.showcaseTitle}>Public team review snapshot</Text>
-                                <View style={styles.reviewMetricsRow}>
-                                    <View style={styles.reviewMetricCard}>
-                                        <Text style={styles.reviewMetricLabel}>Average Rating</Text>
-                                        <Text style={styles.reviewMetricValue}>
-                                            {typeof teamScorecard.averageRating === 'number' ? teamScorecard.averageRating.toFixed(2) : '—'}
-                                        </Text>
-                                    </View>
-                                    <View style={styles.reviewMetricCard}>
-                                        <Text style={styles.reviewMetricLabel}>Reviews</Text>
-                                        <Text style={styles.reviewMetricValue}>{teamScorecard.reviewCount ?? 0}</Text>
-                                    </View>
-                                    <View style={styles.reviewMetricCard}>
-                                        <Text style={styles.reviewMetricLabel}>Code Total</Text>
-                                        <Text style={styles.reviewMetricValue}>{teamScorecard.cumulativeCode ?? '—'}</Text>
-                                    </View>
-                                    <View style={styles.reviewMetricCard}>
-                                        <Text style={styles.reviewMetricLabel}>Quality Total</Text>
-                                        <Text style={styles.reviewMetricValue}>{teamScorecard.cumulativeQuality ?? '—'}</Text>
-                                    </View>
-                                </View>
-                                {teamScorecard.sourceScoreTotals ? (
-                                    <Text style={styles.reviewMetaText}>
-                                        Source totals: user={teamScorecard.sourceScoreTotals.user ?? 0}, master={teamScorecard.sourceScoreTotals.master ?? 0}, system={teamScorecard.sourceScoreTotals.system ?? 0}
-                                    </Text>
-                                ) : null}
-                                {teamScorecard.lastReviewedAt ? (
-                                    <Text style={styles.reviewMetaText}>
-                                        Last reviewed: {formatReviewDate(teamScorecard.lastReviewedAt)}
-                                    </Text>
-                                ) : null}
-                            </View>
-                        ) : null}
-                        {teamPublicReviews.map((review, index) => {
-                            const reviewDate = formatReviewDate(review.createdAt);
-                            const headline = review.comment?.trim() || `Review ${index + 1}`;
-                            const scoreText = typeof review.rating === 'number' ? `★ ${review.rating.toFixed(1)}` : '—';
-                            const secondaryBits = [
-                                review.codeScore != null ? `Code ${review.codeScore}` : null,
-                                review.qualityScore != null ? `Quality ${review.qualityScore}` : null,
-                                review.source ? review.source : null,
-                                reviewDate || null,
-                            ].filter(Boolean).join(' · ');
-                            return (
-                                <View key={review.id ?? `review-${index}`} style={styles.reviewItemCard}>
-                                    <View style={styles.reviewItemHeader}>
-                                        <Text style={styles.reviewItemTitle} numberOfLines={1}>
-                                            {headline}
-                                        </Text>
-                                        <Text
-                                            style={[
-                                                styles.reviewItemRating,
-                                                {
-                                                    color: review.rating && review.rating >= 4
-                                                        ? '#22c55e'
-                                                        : review.rating && review.rating >= 3
-                                                            ? '#f59e0b'
-                                                            : theme.colors.textSecondary,
-                                                },
-                                            ]}
-                                        >
-                                            {scoreText}
-                                        </Text>
-                                    </View>
-                                    {secondaryBits ? (
-                                        <Text style={styles.reviewItemComment}>{secondaryBits}</Text>
-                                    ) : null}
-                                </View>
-                            );
-                        })}
-                    </>
-                ) : null}
-
-                <Text style={[styles.sectionTitle, { marginTop: 24 }]}>System Agents</Text>
-                {systemRoster.length === 0 ? (
-                    <View style={styles.roleCard}>
-                        <Text style={styles.roleTitle}>Supervisor</Text>
-                        <Text style={styles.roleSummary}>
-                            No supervisor has registered to this team yet. Once the daemon spawns a bypass supervisor,
-                            it will appear here and in Evolution for health monitoring.
-                        </Text>
-                    </View>
-                ) : (
-                    systemRoster.map((entry) => {
-                        const roleId = entry.member.roleId || entry.session?.metadata?.role || 'system-agent';
-                        const displayName = entry.member.displayName || entry.session?.metadata?.name || roleId;
-                        const executionPlane = entry.member.executionPlane || entry.session?.metadata?.executionPlane || 'bypass';
-                        const runtime = entry.member.runtimeType || entry.session?.metadata?.flavor || 'claude';
-
-                        return (
-                            <View key={entry.member.sessionId} style={styles.roleCard}>
-                                <Text style={styles.roleTitle}>{displayName}</Text>
-                                <Text style={styles.roleSummary}>
-                                    {roleId} · {executionPlane} · {runtime}
-                                </Text>
-                            </View>
-                        );
-                    })
-                )}
-
-                <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Agreements</Text>
-                <View style={styles.roleCard}>
-                    <Text style={styles.roleTitle}>Status Updates</Text>
-                    <Text style={styles.roleSummary}>{agreements.statusUpdates}</Text>
-                </View>
-                <View style={styles.roleCard}>
-                    <Text style={styles.roleTitle}>Handoffs</Text>
-                    <Text style={styles.roleSummary}>{agreements.handoffs}</Text>
-                </View>
-                <View style={styles.roleCard}>
-                    <Text style={styles.roleTitle}>Escalation</Text>
-                    <Text style={styles.roleSummary}>{agreements.escalation}</Text>
-                </View>
-                <View style={styles.roleCard}>
-                    <Text style={styles.roleTitle}>Definition of Done</Text>
-                    <Text style={styles.roleSummary}>{agreements.definitionOfDone}</Text>
-                </View>
-            </View>
-        </ScrollView>
-    );
 
     const handleTaskDetailSave = React.useCallback(async (taskId: string, updates: Partial<KanbanTask>) => {
         const existingTask = kanbanData.tasks.find((entry) => entry.id === taskId);
@@ -2731,130 +1534,37 @@ export default function TeamDashboardScreen() {
     };
 
     const workspaceSidebar = (
-        <FloatingIslandSidebar
-            variant={shellVariant}
-            header={{
-                title: myDisplayName,
-                subtitle: `${myRoleTitle} · Online`,
-                iconLabel: myDisplayName.slice(0, 1).toUpperCase(),
-                iconGradientColors: ['#314658', '#1E2D3C'],
-                trailingIcon: 'chevron-down',
-            }}
-            agentItems={roster.map((entry) => {
-                const presence = entry.session
-                    ? getAgentPresenceVisual(entry.session)
-                    : { dotColor: '#8A7F74', inactive: true, dead: false };
-                const runtimeLabel = entry.member.runtimeType ? entry.member.runtimeType : undefined;
-                const roleLabel = entry.role?.title || entry.member.roleId || entry.session?.metadata?.role || '';
-                return {
-                    id: entry.member.sessionId,
-                    name: entry.role?.title || entry.member.displayName || entry.session?.metadata?.name || entry.member.sessionId,
-                    dotColor: presence.dotColor,
-                    inactive: presence.inactive,
-                    dead: presence.dead,
-                    description: [roleLabel, runtimeLabel].filter(Boolean).join(' · '),
-                    selected: selectedAgentId === entry.member.sessionId,
-                    activeTaskTitle: entry.activeTask?.title,
-                    activeTaskStartedAt: entry.activeTask?.startedAt,
-                    count: selectedAgentId === entry.member.sessionId
-                        ? entry.tasks.length
-                        : entry.tasks.length > 0 ? entry.tasks.length : undefined,
-                onPress: () => {
-                    setShowWorkspaceDrawer(false);
-                    setSelectedAgentId(entry.member.sessionId);
-                    pushSessionRoute(router, {
-                        id: entry.member.sessionId,
-                        teamId,
-                        teamName: artifact?.title || desktopRoom?.name || 'Team',
-                        roleName: entry.session?.metadata?.role || entry.role?.id || '',
-                        returnTo: teamReturnTo,
-                    });
-                },
-                onLongPress: () => {
-                    const displayName = entry.role?.title || entry.member.displayName || entry.session?.metadata?.name || entry.member.sessionId;
-                    handleAgentLongPress(entry.member.sessionId, displayName);
-                },
-                };
-            })}
-            statusItems={[
-                {
-                    id: 'decision',
-                    icon: 'radio-button-on',
-                    label: 'Needs Decision',
-                    color: '#FF3B30',
-                    backgroundColor: '#FF3B300D',
-                    count: statusSummary.decision,
-                },
-                {
-                    id: 'working',
-                    icon: 'pulse',
-                    label: 'Working',
-                    color: '#FF9500',
-                    backgroundColor: '#FF950012',
-                    count: statusSummary.working,
-                },
-                {
-                    id: 'review',
-                    icon: 'people',
-                    label: 'Team Review',
-                    color: '#8A7F74',
-                    backgroundColor: '#00000000',
-                    count: statusSummary.review,
-                },
-            ]}
-            conversationItems={allTeams.map((team, index) => ({
-                id: team.id,
-                name: team.title || 'Team',
-                lastMessage: '',
-                time: '',
-                avatarColor: SHELL_CONVERSATION_COLORS[index % SHELL_CONVERSATION_COLORS.length],
-                avatarLabel: (team.title || 'T').slice(0, 1).toUpperCase(),
-                selected: team.id === teamId,
-                onPress: () => {
-                    setShowWorkspaceDrawer(false);
-                    router.push({
-                        pathname: '/teams/[id]',
-                        params: { id: team.id },
-                    } as any);
-                },
-            }))}
-            conversationSectionLabel="Teams"
-            conversationEmptyText="No teams yet"
+        <WorkspaceSidebar
+            myDisplayName={myDisplayName}
+            myRoleTitle={myRoleTitle}
+            roster={roster}
+            selectedAgentId={selectedAgentId}
+            setSelectedAgentId={setSelectedAgentId}
+            setShowWorkspaceDrawer={setShowWorkspaceDrawer}
+            artifact={artifact}
+            desktopRoom={desktopRoom}
+            teamReturnTo={teamReturnTo}
+            teamId={teamId}
+            handleAgentLongPress={handleAgentLongPress}
+            statusSummary={statusSummary}
+            allTeams={allTeams}
         />
     );
 
     const boardFallbackPanel = (
-        <View style={styles.loadingContainer}>
-            {((isMissingDesktopRoom && !desktopRoom && !collaborationState) || isLoading) ? (
-                <ActivityIndicator size="large" />
-            ) : (
-                <View style={{ alignItems: 'center', padding: 20 }}>
-                    <Ionicons name="alert-circle-outline" size={48} color={theme.colors.textSecondary} />
-                    <Text style={[styles.title, { marginTop: 16, textAlign: 'center' }]}>
-                        {boardFallbackTitle}
-                    </Text>
-                    <Text style={[styles.subtitle, { marginTop: 8, textAlign: 'center', maxWidth: 300 }]}>
-                        {boardFallbackDescription}
-                    </Text>
-                    {!desktopBridge && !isArtifactParseError && !isAuthMissing ? (
-                        <Pressable
-                            style={{
-                                marginTop: 20,
-                                backgroundColor: theme.colors.button.primary.background,
-                                paddingHorizontal: 24,
-                                paddingVertical: 12,
-                                borderRadius: 8
-                            }}
-                            onPress={handleInitializeArtifact}
-                        >
-                            <Text style={{ color: theme.colors.button.primary.tint, fontWeight: '600' }}>
-                                Initialize Board
-                            </Text>
-                        </Pressable>
-                    ) : null}
-                </View>
-            )}
-        </View>
+        <BoardFallbackView
+            isMissingDesktopRoom={isMissingDesktopRoom}
+            desktopRoom={desktopRoom}
+            collaborationState={collaborationState}
+            isLoading={isLoading}
+            boardFallbackTitle={boardFallbackTitle}
+            boardFallbackDescription={boardFallbackDescription}
+            desktopBridge={desktopBridge}
+            isArtifactParseError={isArtifactParseError}
+            isAuthMissing={isAuthMissing}
+            onInitialize={handleInitializeArtifact}
+            isOrgManagerInitializing={isOrgManagerInitializing}
+        />
     );
 
     const renderAgentsButton = (compact: boolean = false) => (
@@ -2875,7 +1585,7 @@ export default function TeamDashboardScreen() {
             <Ionicons name="sparkles-outline" size={compact ? 16 : 15} color={theme.colors.text} />
             <Text style={[styles.agentsButtonText, { color: theme.colors.text }]}>Agents</Text>
             <Text style={[styles.agentsButtonText, { color: theme.colors.textSecondary }]}>
-                {agentRoster.length}
+                {roster.length}
             </Text>
         </Pressable>
     );
@@ -2893,7 +1603,35 @@ export default function TeamDashboardScreen() {
                 ]}
             >
                 <TeamAgentsPopover
-                    items={agentRoster.map((entry) => ({
+                    connectionStatus={(() => {
+                        switch (socketStatus.status) {
+                            case 'connected':
+                                return { text: t('status.connected'), color: theme.colors.status.connected, isPulsing: false };
+                            case 'connecting':
+                                return { text: t('status.connecting'), color: theme.colors.status.connecting, isPulsing: true };
+                            case 'disconnected':
+                                return { text: t('status.disconnected'), color: theme.colors.status.disconnected, isPulsing: false };
+                            case 'error':
+                                return { text: t('status.error'), color: theme.colors.status.error, isPulsing: false };
+                            default:
+                                return null;
+                        }
+                    })()}
+                    items={roster.map((entry) => ({
+                        presenceLabel: (() => {
+                            if (!entry.session) return 'Offline';
+                            const visual = getAgentPresenceVisual({ active: entry.session.active ?? false, activeAt: entry.session.activeAt ?? 0 });
+                            switch (visual.state) {
+                                case 'online':
+                                    return 'Online';
+                                case 'stale':
+                                    return 'Stale';
+                                case 'dead':
+                                    return 'Ended';
+                                default:
+                                    return 'Offline';
+                            }
+                        })(),
                         sessionId: entry.member.sessionId,
                         specId: entry.member.specId ?? null,
                         displayName: entry.member.displayName || entry.session?.metadata?.name || entry.role?.title || entry.member.sessionId,
@@ -3034,7 +1772,23 @@ export default function TeamDashboardScreen() {
                     <>
                         {activeTab === 'chat' && renderChat()}
                         {activeTab === 'board' && kanbanPanel}
-                        {activeTab === 'info' && renderInfo()}
+                        {activeTab === 'info' && (
+                            <TeamInfoSection
+                                roster={roster}
+                                agentRosterSessions={agentRosterSessions}
+                                setSelectedAgentId={setSelectedAgentId}
+                                teamPromptLines={teamPromptLines}
+                                teamPromptTitle={teamPromptTitle}
+                                teamPromptBody={teamPromptBody}
+                                teamBootObjective={teamBootObjective}
+                                kanbanData={kanbanData}
+                                teamReviewLoading={teamReviewLoading}
+                                teamScorecard={teamScorecard}
+                                teamPublicReviews={teamPublicReviews}
+                                systemRoster={systemRoster}
+                                agreements={agreements}
+                            />
+                        )}
                         {activeTab === 'evolution' && <EvolutionSection teamId={teamId} />}
                     </>
                 )}
@@ -3110,90 +1864,14 @@ export default function TeamDashboardScreen() {
                 }}
             />
             {!isDesktopShell && showMenu && (
-                <>
-                    <Pressable
-                        style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            zIndex: 999,
-                        }}
-                        onPress={() => setShowMenu(false)}
-                    />
-                    <View style={{
-                        position: 'absolute',
-                        top: 50,
-                        right: 8,
-                        backgroundColor: theme.colors.surface,
-                        borderRadius: 12,
-                        shadowColor: '#000',
-                        shadowOffset: { width: 0, height: 4 },
-                        shadowOpacity: 0.15,
-                        shadowRadius: 12,
-                        elevation: 8,
-                        minWidth: 180,
-                        borderWidth: 1,
-                        borderColor: theme.colors.divider,
-                        zIndex: 1000,
-                    }}>
-                        <Pressable
-                            onPress={handleRenameTeam}
-                            style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                padding: 14,
-                                borderBottomWidth: 1,
-                                borderBottomColor: theme.colors.divider,
-                            }}
-                        >
-                            <Ionicons name="pencil-outline" size={18} color={theme.colors.text} style={{ marginRight: 12 }} />
-                            <Text style={{ fontSize: 15, color: theme.colors.text }}>Rename</Text>
-                        </Pressable>
-                        <Pressable
-                            onPress={handleRecoverTeam}
-                            disabled={isRecoveringTeam}
-                            style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                padding: 14,
-                                borderBottomWidth: 1,
-                                borderBottomColor: theme.colors.divider,
-                                opacity: isRecoveringTeam ? 0.6 : 1,
-                            }}
-                        >
-                            <Ionicons name="refresh-outline" size={18} color={theme.colors.text} style={{ marginRight: 12 }} />
-                            <Text style={{ fontSize: 15, color: theme.colors.text }}>
-                                {isRecoveringTeam ? 'Recovering…' : 'Recover'}
-                            </Text>
-                        </Pressable>
-                        <Pressable
-                            onPress={handleArchiveTeam}
-                            style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                padding: 14,
-                                borderBottomWidth: 1,
-                                borderBottomColor: theme.colors.divider,
-                            }}
-                        >
-                            <Ionicons name="archive-outline" size={18} color={theme.colors.text} style={{ marginRight: 12 }} />
-                            <Text style={{ fontSize: 15, color: theme.colors.text }}>Archive</Text>
-                        </Pressable>
-                        <Pressable
-                            onPress={handleDeleteTeam}
-                            style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                padding: 14,
-                            }}
-                        >
-                            <Ionicons name="trash-outline" size={18} color={theme.colors.textDestructive} style={{ marginRight: 12 }} />
-                            <Text style={{ fontSize: 15, color: theme.colors.textDestructive }}>Delete</Text>
-                        </Pressable>
-                    </View>
-                </>
+                <MobileTeamMenu
+                    onClose={() => setShowMenu(false)}
+                    onRename={handleRenameTeam}
+                    onRecover={handleRecoverTeam}
+                    isRecovering={isRecoveringTeam}
+                    onArchive={handleArchiveTeam}
+                    onDelete={handleDeleteTeam}
+                />
             )}
             {isDesktopShell ? (
                 desktopShell
@@ -3216,7 +1894,7 @@ export default function TeamDashboardScreen() {
                                         {artifact?.title || desktopRoom?.name || 'Workspace'}
                                     </Text>
                                     <Text style={styles.mobileWorkspaceSubtitle} numberOfLines={1}>
-                                        {onlineCount} online · {agentRoster.length} agents · {allTeams.length} teams
+                                        {onlineCount} online · {roster.length} agents · {allTeams.length} teams
                                     </Text>
                                 </View>
                                 <Ionicons
@@ -3274,7 +1952,23 @@ export default function TeamDashboardScreen() {
                         <>
                             {activeTab === 'chat' && renderChat()}
                             {activeTab === 'board' && kanbanPanel}
-                            {activeTab === 'info' && renderInfo()}
+                            {activeTab === 'info' && (
+                                <TeamInfoSection
+                                    roster={roster}
+                                    agentRosterSessions={agentRosterSessions}
+                                    setSelectedAgentId={setSelectedAgentId}
+                                    teamPromptLines={teamPromptLines}
+                                    teamPromptTitle={teamPromptTitle}
+                                    teamPromptBody={teamPromptBody}
+                                    teamBootObjective={teamBootObjective}
+                                    kanbanData={kanbanData}
+                                    teamReviewLoading={teamReviewLoading}
+                                    teamScorecard={teamScorecard}
+                                    teamPublicReviews={teamPublicReviews}
+                                    systemRoster={systemRoster}
+                                    agreements={agreements}
+                                />
+                            )}
                             {activeTab === 'evolution' && <EvolutionSection teamId={teamId} />}
                         </>
                     )}

@@ -128,6 +128,7 @@ export const JoinTeamModal = React.memo(function JoinTeamModal({
             await sync.addTeamMember(selectedTeamId, sessionId, roleId, sessionName, {
                 memberId,
                 sessionTag,
+                candidateId: `spec:${genome.id}`,
                 specId: genome.id,
                 runtimeType,
                 ...(trimmedCustomPrompt ? { customPrompt: trimmedCustomPrompt } : {}),

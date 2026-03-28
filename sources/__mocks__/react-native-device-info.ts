@@ -1,0 +1,27 @@
+// Stub for react-native-device-info — native module, cannot run in Node.js test env
+export const getDeviceType = () => 'Handset';
+export const getDeviceTypeSync = () => 'Handset';
+export const getModel = () => 'TestDevice';
+export const getModelSync = () => 'TestDevice';
+export const getBrand = () => 'Test';
+export const getBrandSync = () => 'Test';
+export const getSystemVersion = () => '15.0';
+export const getSystemVersionSync = () => '15.0';
+export const getUniqueId = async () => 'test-device-id';
+export const getUniqueIdSync = () => 'test-device-id';
+export const getBundleId = () => 'com.test.app';
+export const getBundleIdSync = () => 'com.test.app';
+export const getVersion = () => '1.0.0';
+export const getVersionSync = () => '1.0.0';
+export const getBuildNumber = () => '1';
+export const getBuildNumberSync = () => '1';
+export const isTablet = () => false;
+export const hasNotch = () => false;
+export const hasNotchSync = () => false;
+export const isEmulator = async () => false;
+export const isEmulatorSync = () => false;
+export const isPinOrFingerprintSet = async () => false;
+export const isPinOrFingerprintSetSync = () => false;
+export const getDeviceId = () => 'device-id';
+export const getDeviceIdSync = () => 'device-id';
+export default { getDeviceType, getDeviceTypeSync, getModel, getModelSync, getBrand, getBrandSync };

@@ -21,12 +21,27 @@ export default function Root({ children }: { children: React.ReactNode }) {
 
         {/* Using raw CSS styles as an escape-hatch to ensure the background color never flickers in dark-mode. */}
         <style dangerouslySetInnerHTML={{ __html: responsiveBackground }} />
+        {/* Guard against custom element re-registration errors from third-party scripts (e.g. browser
+            extensions or co-deployed services that call customElements.define() more than once for the
+            same name). This must run before any other script so the patch is in place from page load. */}
+        <script dangerouslySetInnerHTML={{ __html: customElementsGuard }} />
         {/* Add any additional <head> elements that you want globally available on web... */}
       </head>
       <body>{children}</body>
     </html>
   );
 }
+
+// Patch customElements.define to silently skip re-registration of already-defined elements.
+// Prevents "A custom element with name '...' has already been defined" errors thrown by
+// third-party scripts (browser extensions, co-deployed services) on SPA navigations.
+const customElementsGuard = `(function(){
+  if(typeof customElements==='undefined')return;
+  var _orig=customElements.define.bind(customElements);
+  customElements.define=function(name,ctor,opts){
+    if(!customElements.get(name))_orig(name,ctor,opts);
+  };
+})();`;
 
 const responsiveBackground = `
 body {

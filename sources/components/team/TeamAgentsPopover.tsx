@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '@/components/ui/StyledText';
 import { Avatar } from '@/components/avatar/Avatar';
+import { StatusDot } from '@/components/ui/StatusDot';
 
 export interface TeamAgentsPopoverItem {
     sessionId: string;
@@ -15,10 +16,16 @@ export interface TeamAgentsPopoverItem {
     sessionPath?: string | null;
     activeTaskTitle?: string | null;
     isOnline: boolean;
+    presenceLabel?: string | null;
 }
 
 interface Props {
     items: TeamAgentsPopoverItem[];
+    connectionStatus?: {
+        text: string;
+        color: string;
+        isPulsing?: boolean;
+    } | null;
     onAddAgent: () => void;
     onOpenSession: (sessionId: string) => void;
     onRenameSession: (sessionId: string, displayName: string) => void;
@@ -149,12 +156,13 @@ function buildMeta(item: TeamAgentsPopoverItem): string {
         item.roleLabel,
         item.runtimeType ? item.runtimeType.toUpperCase() : null,
         item.modelLabel,
-        item.isOnline ? 'Online' : 'Offline',
+        item.presenceLabel || (item.isOnline ? 'Online' : 'Offline'),
     ].filter(Boolean).join(' · ');
 }
 
 export const TeamAgentsPopover = React.memo(function TeamAgentsPopover({
     items,
+    connectionStatus,
     onAddAgent,
     onOpenSession,
     onRenameSession,
@@ -171,6 +179,19 @@ export const TeamAgentsPopover = React.memo(function TeamAgentsPopover({
                     <Text style={[styles.subtitle, { color: theme.colors.textSecondary }]}>
                         {items.length} in this team
                     </Text>
+                    {connectionStatus?.text ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                            <StatusDot
+                                color={connectionStatus.color}
+                                isPulsing={connectionStatus.isPulsing}
+                                size={6}
+                                style={{ marginRight: 4 }}
+                            />
+                            <Text style={[styles.subtitle, { color: connectionStatus.color, marginTop: 0 }]}>
+                                {connectionStatus.text}
+                            </Text>
+                        </View>
+                    ) : null}
                 </View>
                 <Pressable
                     onPress={onAddAgent}

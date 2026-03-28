@@ -180,6 +180,7 @@ export async function addTeamMember(
     opts?: {
         memberId?: string;
         sessionTag?: string;
+        candidateId?: string;
         specId?: string;
         customPrompt?: string;
         parentSessionId?: string;
@@ -190,6 +191,7 @@ export async function addTeamMember(
     }
 ): Promise<TeamMemberResponse> {
     const API_ENDPOINT = getServerUrl();
+    const candidateId = opts?.candidateId ?? (opts?.specId ? `spec:${opts.specId}` : undefined);
 
     return await backoff(async () => {
         const response = await fetch(`${API_ENDPOINT}/v1/teams/${teamId}/members`, {
@@ -204,6 +206,7 @@ export async function addTeamMember(
                 displayName,
                 ...(opts?.memberId !== undefined ? { memberId: opts.memberId } : {}),
                 ...(opts?.sessionTag !== undefined ? { sessionTag: opts.sessionTag } : {}),
+                ...(candidateId !== undefined ? { candidateId } : {}),
                 ...(opts?.specId !== undefined ? { specId: opts.specId } : {}),
                 ...(opts?.customPrompt !== undefined ? { customPrompt: opts.customPrompt } : {}),
                 ...(opts?.parentSessionId !== undefined ? { parentSessionId: opts.parentSessionId } : {}),

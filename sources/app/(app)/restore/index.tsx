@@ -82,6 +82,12 @@ export default memo(function Restore() {
 
             <ItemGroup footer={t('settings.syncDeviceSubtitle')}>
                 <Item
+                    title={t('connect.linkViaQRCode')}
+                    subtitle={t('connect.linkViaQRCodeDescription')}
+                    icon={<Ionicons name="qr-code-outline" size={29} color="#34C759" />}
+                    onPress={() => router.push('/restore/qr' as never)}
+                />
+                <Item
                     title={t('connect.enterUrlManually')}
                     subtitle={t('connect.enterUrlDescription')}
                     icon={<Ionicons name="link-outline" size={29} color="#007AFF" />}

@@ -280,6 +280,48 @@ function GenomeInfoPanel({ session }: { session: Session }) {
     );
 }
 
+function InternalIdentityPanel({ session }: { session: Session }) {
+    const teamId = session.metadata?.teamId ?? '';
+    const artifact = useArtifact(teamId);
+    const member = React.useMemo(() => {
+        if (!artifact?.body) return null;
+        try {
+            const board = JSON.parse(artifact.body) as KanbanBoard;
+            return board.team?.members?.find(m => m.sessionId === session.id) ?? null;
+        } catch {
+            return null;
+        }
+    }, [artifact?.body, session.id]);
+
+    const candidateId = member?.candidateId ?? (session.metadata as any)?.candidateId ?? null;
+    const specId = member?.specId ?? (session.metadata as any)?.genomeId ?? null;
+
+    if (!candidateId && !specId) {
+        return null;
+    }
+
+    return (
+        <ItemGroup title="Internal Identity">
+            {candidateId ? (
+                <Item
+                    title="Candidate ID"
+                    subtitle={candidateId}
+                    icon={<Ionicons name="git-branch-outline" size={29} color="#8E8E93" />}
+                    showChevron={false}
+                />
+            ) : null}
+            {specId ? (
+                <Item
+                    title="Spec ID"
+                    subtitle={specId}
+                    icon={<Ionicons name="finger-print-outline" size={29} color="#8E8E93" />}
+                    showChevron={false}
+                />
+            ) : null}
+        </ItemGroup>
+    );
+}
+
 // ─── Main Session Info ────────────────────────────────────────────────────────
 
 function SessionInfoContent({ session, returnTo }: { session: Session; returnTo?: string }) {
@@ -492,6 +534,9 @@ function SessionInfoContent({ session, returnTo }: { session: Session; returnTo?
 
                 {/* Genome Info Panel — shown for team sessions with specId */}
                 <GenomeInfoPanel session={session} />
+
+                {/* Internal identity — debug/info layer only */}
+                {devModeEnabled && <InternalIdentityPanel session={session} />}
 
                 {/* Token Usage */}
                 {session.latestUsage && (

@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { KanbanTeamMember } from '@/sync/kanbanTypes';
+import {
+    DEFAULT_TEAM_AGREEMENTS,
+    DEFAULT_TEAM_ROLES,
+    type KanbanBoard,
+    type KanbanTeamMember,
+} from '@/sync/kanbanTypes';
 import type { TeamMessage } from '@/sync/teamMessageTypes';
 
-import { applyDerivedLifecycleTimestamps } from './teamLifecycle';
+import { applyDerivedLifecycleTimestamps, buildDerivedLifecyclePersistPlan } from './teamLifecycle';
 
 afterEach(() => {
     vi.restoreAllMocks();
@@ -214,5 +219,78 @@ describe('applyDerivedLifecycleTimestamps', () => {
         expect(result.changed).toBe(true);
         expect(warnSpy).toHaveBeenCalledOnce();
         expect(warnSpy.mock.calls[0]?.[0]).toContain('Non-monotone lifecycle timestamps');
+    });
+
+    it('dedupes repeated lifecycle persistence plans while the same artifact body is already pending', () => {
+        const board: KanbanBoard = {
+            columns: [],
+            tasks: [],
+            team: {
+                name: 'Team 1',
+                roles: DEFAULT_TEAM_ROLES,
+                agreements: DEFAULT_TEAM_AGREEMENTS,
+                members: [
+                    {
+                        sessionId: 'session-1',
+                        roleId: 'implementer',
+                        displayName: 'Implementer 1',
+                        lifecycle: {
+                            spawnRequestedAt: 100,
+                        },
+                    },
+                ],
+            },
+        };
+
+        const messages: TeamMessage[] = [
+            {
+                id: 'm1',
+                teamId: 'team-1',
+                fromSessionId: 'session-1',
+                fromRole: 'implementer',
+                content: 'online and ready',
+                type: 'chat',
+                timestamp: 200,
+                metadata: {
+                    type: 'handshake',
+                },
+            },
+            {
+                id: 'm2',
+                teamId: 'team-1',
+                fromSessionId: 'session-1',
+                fromRole: 'implementer',
+                content: '[implementer] Started working on "Task A"',
+                type: 'task-update',
+                timestamp: 300,
+                metadata: {
+                    taskId: 'task-a',
+                    changeType: 'execution-started',
+                },
+            },
+        ];
+
+        const currentBody = JSON.stringify(board, null, 2);
+
+        const firstPlan = buildDerivedLifecyclePersistPlan({
+            board,
+            currentBody,
+            messages,
+        });
+
+        expect(firstPlan.shouldPersist).toBe(true);
+        expect(firstPlan.nextBody).not.toBeNull();
+
+        const secondPlan = buildDerivedLifecyclePersistPlan({
+            board,
+            currentBody,
+            messages,
+            lastScheduledBody: firstPlan.nextBody,
+        });
+
+        expect(secondPlan.changed).toBe(true);
+        expect(secondPlan.nextBody).toBe(firstPlan.nextBody);
+        expect(secondPlan.shouldPersist).toBe(false);
+        expect(secondPlan.reason).toBe('duplicate-pending-body');
     });
 });

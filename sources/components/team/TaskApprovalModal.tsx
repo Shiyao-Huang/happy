@@ -134,7 +134,7 @@ export const TaskApprovalModal: React.FC<TaskApprovalModalProps> = ({
 
     const handleReject = async (task: KanbanTask) => {
         if (!rejectionReason.trim()) {
-            alert('Please provide a reason for rejection');
+            CustomModal.alert('Rejection Reason Required', 'Please provide a reason for rejection');
             return;
         }
 

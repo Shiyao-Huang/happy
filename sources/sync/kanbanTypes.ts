@@ -244,6 +244,7 @@ export interface KanbanTeamMember {
      * Recover flows should reuse this instead of generating a fresh random tag.
      */
     sessionTag?: string;
+    candidateId?: string;
     roleId: string;
     displayName?: string;
     focusAreas?: string[];

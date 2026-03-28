@@ -29,6 +29,7 @@ export const MetadataSchema = z.object({
     role: z.string().optional(), // Agent role in team
     memberId: z.string().optional(),
     sessionTag: z.string().optional(),
+    candidateId: z.string().optional(),
     executionPlane: z.enum(['mainline', 'bypass']).optional(),
     teamId: z.string().optional(), // Team/artifact ID this session belongs to
     roomId: z.string().optional(),

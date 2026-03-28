@@ -54,7 +54,7 @@ const COMMENT_TYPE_OPTIONS: Array<{
 
 const CHECKLIST_LINE_REGEX = /^[-*]\s+\[([ xX])\]\s+(.+)$/;
 
-function getCommentTypeLabel(type?: string): string {
+export function getCommentTypeLabel(type?: string): string {
     switch (type) {
         case 'plan': return 'Plan';
         case 'plan-review': return 'Plan Review';
@@ -70,7 +70,7 @@ function getCommentTypeLabel(type?: string): string {
     }
 }
 
-function extractChecklistItems(content?: string): string[] {
+export function extractChecklistItems(content?: string): string[] {
     if (!content) return [];
     return content
         .split('\n')
@@ -80,7 +80,7 @@ function extractChecklistItems(content?: string): string[] {
         .map((match) => match[2].trim());
 }
 
-function parseCommentBody(content: string): { prose: string; checklist: Array<{ text: string; completed: boolean }> } {
+export function parseCommentBody(content: string): { prose: string; checklist: Array<{ text: string; completed: boolean }> } {
     const prose: string[] = [];
     const checklist: Array<{ text: string; completed: boolean }> = [];
 
@@ -102,7 +102,7 @@ function parseCommentBody(content: string): { prose: string; checklist: Array<{ 
     };
 }
 
-function buildCommentTemplate(type: TaskCommentType, planSource?: string): string {
+export function buildCommentTemplate(type: TaskCommentType, planSource?: string): string {
     const planItems = extractChecklistItems(planSource);
 
     switch (type) {
@@ -389,8 +389,7 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
 
     // Handler for adding subtask
     const handleAddSubtask = () => {
-        // TODO: Show add subtask modal
-        console.log('Add subtask not implemented');
+        // Subtask creation not yet implemented
     };
 
     const handleDelete = async () => {
@@ -440,7 +439,7 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                         <TextInput
                             style={stylesheet.titleInput}
                             value={editedTask.title}
-                            onChangeText={(text) => setEditedTask({ ...editedTask, title: text })}
+                            onChangeText={(text) => setEditedTask((previous) => ({ ...previous, title: text }))}
                             placeholder="Task title"
                         />
                     ) : (
@@ -518,7 +517,7 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                                     <TextInput
                                         style={stylesheet.descriptionInput}
                                         value={editedTask.description}
-                                        onChangeText={(text) => setEditedTask({ ...editedTask, description: text })}
+                                        onChangeText={(text) => setEditedTask((previous) => ({ ...previous, description: text }))}
                                         placeholder="Add a description..."
                                         multiline
                                         numberOfLines={4}

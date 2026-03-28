@@ -106,7 +106,7 @@ const TEAM_ROLE_LIBRARY = [
       "Analyze the user prompt to identify required capabilities",
       "Spawn the minimum viable team — do not over-staff",
       "Hand off coordination to the master role once the team is assembled",
-      "Step back after initial team assembly — do not micromanage"
+      "Remain available in HR standby after initial team assembly — do not self-terminate"
     ],
     "protocol": [
       "⚠️ CRITICAL: You are the SEED AGENT. You assemble the team, then STEP BACK.",
@@ -448,7 +448,7 @@ const TEAM_ROLE_LIBRARY = [
       "Read all available logs before making judgments",
       "Cross-validate agent claims against CC log evidence",
       "Score first, intervene only when necessary",
-      "Auto-terminate after scoring cycle completes"
+      "Remain in standby after each scoring cycle"
     ],
     "protocol": [
       "1. READ team messages log via read_team_log",
@@ -456,7 +456,7 @@ const TEAM_ROLE_LIBRARY = [
       "3. CROSS-VALIDATE: compare what agents claim vs what CC logs show",
       "4. SCORE each agent via score_agent",
       "5. If any agent is stuck/dead/overflowed: intervene via compact_agent or resume_agent",
-      "6. Output SUPERVISOR_COMPLETE and auto-terminate"
+      "6. Save state / publish the cycle summary, then remain in standby"
     ],
     "policy": {
       "permissionMode": "read-only",
@@ -476,20 +476,20 @@ const TEAM_ROLE_LIBRARY = [
     "abilityBoundaries": [
       "Help Agent only fixes the specific reported issue",
       "Help Agent does not do implementation work",
-      "Help Agent auto-terminates after repair"
+      "Help Agent ends each repair with an explicit lifecycle choice"
     ],
     "handoffProtocol": [
       "Read the help request details",
       "Assess the agent's current state",
       "Execute the minimum intervention needed",
-      "Report result and auto-terminate"
+      "Report result, then explicitly choose standby or retire"
     ],
     "protocol": [
       "1. READ the help request event that triggered you",
       "2. ASSESS the requesting agent's state via get_team_info",
       "3. EXECUTE repair: compact_agent, send guidance via send_team_message, or recommend resume",
       "4. REPORT repair result via score_agent",
-      "5. Output HELP_COMPLETE and auto-terminate"
+      "5. Finish with an explicit lifecycle decision (standby or retire)"
     ],
     "policy": {
       "permissionMode": "read-only",

@@ -1,4 +1,4 @@
-import type { KanbanTeamMember } from '@/sync/kanbanTypes';
+import type { KanbanBoard, KanbanTeamMember } from '@/sync/kanbanTypes';
 import type { TeamMessage } from '@/sync/teamMessageTypes';
 
 type MemberLifecycle = NonNullable<KanbanTeamMember['lifecycle']>;
@@ -125,5 +125,99 @@ export function applyDerivedLifecycleTimestamps(
     return {
         members: nextMembers,
         changed,
+    };
+}
+
+export interface DerivedLifecyclePersistPlanInput {
+    board: KanbanBoard;
+    currentBody?: string | null;
+    messages: TeamMessage[];
+    processStartedBySessionId?: ReadonlyMap<string, number>;
+    lastScheduledBody?: string | null;
+}
+
+export interface DerivedLifecyclePersistPlan {
+    changed: boolean;
+    nextBoard: KanbanBoard | null;
+    nextBody: string | null;
+    shouldPersist: boolean;
+    reason:
+        | 'no-team-members'
+        | 'no-derived-change'
+        | 'body-already-current'
+        | 'duplicate-pending-body'
+        | 'persist';
+}
+
+export function buildDerivedLifecyclePersistPlan({
+    board,
+    currentBody,
+    messages,
+    processStartedBySessionId = new Map(),
+    lastScheduledBody,
+}: DerivedLifecyclePersistPlanInput): DerivedLifecyclePersistPlan {
+    const currentTeam = board.team;
+    const members = currentTeam?.members ?? [];
+    if (!currentTeam || members.length === 0) {
+        return {
+            changed: false,
+            nextBoard: null,
+            nextBody: null,
+            shouldPersist: false,
+            reason: 'no-team-members',
+        };
+    }
+
+    const { members: nextMembers, changed } = applyDerivedLifecycleTimestamps(
+        members,
+        messages,
+        processStartedBySessionId,
+    );
+
+    if (!changed) {
+        return {
+            changed: false,
+            nextBoard: null,
+            nextBody: null,
+            shouldPersist: false,
+            reason: 'no-derived-change',
+        };
+    }
+
+    const nextBoard: KanbanBoard = {
+        ...board,
+        team: {
+            ...currentTeam,
+            members: nextMembers,
+        },
+    };
+    const nextBody = JSON.stringify(nextBoard, null, 2);
+
+    if (currentBody === nextBody) {
+        return {
+            changed: true,
+            nextBoard,
+            nextBody,
+            shouldPersist: false,
+            reason: 'body-already-current',
+        };
+    }
+
+    if (lastScheduledBody === nextBody) {
+        return {
+            changed: true,
+            nextBoard,
+            nextBody,
+            shouldPersist: false,
+            reason: 'duplicate-pending-body',
+        };
+    }
+
+    return {
+        changed: true,
+        nextBoard,
+        nextBody,
+        shouldPersist: true,
+        reason: 'persist',
     };
 }

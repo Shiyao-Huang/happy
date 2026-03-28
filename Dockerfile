@@ -25,31 +25,19 @@ ENV NODE_ENV=production \
 COPY . .
 RUN yarn expo export --platform web --output-dir dist --clear
 
-RUN ASSET_PREFIX="${BASE_PATH}" && \
-    echo "Normalizing exported web asset paths with prefix: ${ASSET_PREFIX:-/}" && \
-    find dist -name '*.html' -exec sed -i \
-      -e "s|href=\"\\./_expo/|href=\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|href=\"_expo/|href=\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|href=\"/_expo/|href=\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|href=\"\\./assets/|href=\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|href=\"assets/|href=\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|href=\"/assets/|href=\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|href=\"\\./favicon|href=\"${ASSET_PREFIX}/favicon|g" \
-      -e "s|href=\"favicon|href=\"${ASSET_PREFIX}/favicon|g" \
-      -e "s|href=\"/favicon|href=\"${ASSET_PREFIX}/favicon|g" \
-      -e "s|src=\"\\./_expo/|src=\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|src=\"_expo/|src=\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|src=\"/_expo/|src=\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|src=\"\\./assets/|src=\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|src=\"assets/|src=\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|src=\"/assets/|src=\"${ASSET_PREFIX}/assets/|g" {} + && \
-    find dist -name '*.js' -exec sed -i \
-      -e "s|\"\\./_expo/|\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|\"_expo/|\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|\"/_expo/|\"${ASSET_PREFIX}/_expo/|g" \
-      -e "s|\"\\./assets/|\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|\"assets/|\"${ASSET_PREFIX}/assets/|g" \
-      -e "s|\"/assets/|\"${ASSET_PREFIX}/assets/|g" {} +
+# Rewrite asset paths for sub-path deployment (e.g. /webappv3)
+RUN if [ -n "$BASE_PATH" ]; then \
+      echo "Rewriting asset paths with base path: $BASE_PATH" && \
+      find dist -name '*.html' -exec sed -i \
+        -e "s|href=\"/_expo/|href=\"${BASE_PATH}/_expo/|g" \
+        -e "s|href=\"/assets/|href=\"${BASE_PATH}/assets/|g" \
+        -e "s|href=\"/favicon|href=\"${BASE_PATH}/favicon|g" \
+        -e "s|src=\"/_expo/|src=\"${BASE_PATH}/_expo/|g" \
+        -e "s|src=\"/assets/|src=\"${BASE_PATH}/assets/|g" {} + && \
+      find dist -name '*.js' -exec sed -i \
+        -e "s|\"/_expo/|\"${BASE_PATH}/_expo/|g" \
+        -e "s|\"/assets/|\"${BASE_PATH}/assets/|g" {} + ; \
+    fi
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runner
 ARG BASE_PATH=""
@@ -72,5 +60,11 @@ RUN if [ -n "$BASE_PATH" ]; then \
       }" > /etc/nginx/conf.d/default.conf; \
     fi
 USER nginx
+
+# Fall back to copied nginx.conf when no BASE_PATH
+COPY nginx.conf /tmp/nginx-default.conf
+RUN if [ -z "$(cat /etc/nginx/conf.d/default.conf 2>/dev/null)" ]; then \
+      cp /tmp/nginx-default.conf /etc/nginx/conf.d/default.conf; \
+    fi
 
 EXPOSE 8080

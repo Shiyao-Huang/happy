@@ -281,6 +281,8 @@ class Sync {
     private syncedSessionTeams = new Set<string>();
     // Reentrancy guard for fetchArtifactsList to prevent mutual recursion with updateArtifact
     private _isFetchingArtifactsList = false;
+    // Reentrancy guard for duplicate artifact writes with the same payload
+    private inFlightArtifactUpdates = new Map<string, Promise<void>>();
 
     constructor() {
         this.sessionsSync = new InvalidateSync(this.fetchSessions);
@@ -1289,7 +1291,55 @@ class Sync {
         }
     }
 
+    private buildArtifactUpdateDedupeKey(
+        artifactId: string,
+        title: string | null,
+        body: string | null,
+        sessions?: string[],
+        draft?: boolean,
+        type?: ArtifactKind,
+    ): string {
+        return JSON.stringify({
+            artifactId,
+            title,
+            body,
+            sessions: sessions ?? null,
+            draft: draft ?? null,
+            type: type ?? null,
+        });
+    }
+
     public async updateArtifact(
+        artifactId: string,
+        title: string | null,
+        body: string | null,
+        sessions?: string[],
+        draft?: boolean,
+        type?: ArtifactKind,
+        _retryCount: number = 0  // Internal: track retry attempts
+    ): Promise<void> {
+        if (_retryCount === 0) {
+            const dedupeKey = this.buildArtifactUpdateDedupeKey(artifactId, title, body, sessions, draft, type);
+            const inFlightUpdate = this.inFlightArtifactUpdates.get(dedupeKey);
+            if (inFlightUpdate) {
+                console.log(`↩️ updateArtifact: Reusing in-flight write for ${artifactId}`);
+                return inFlightUpdate;
+            }
+
+            const promise = this.updateArtifactInternal(artifactId, title, body, sessions, draft, type, _retryCount)
+                .finally(() => {
+                    if (this.inFlightArtifactUpdates.get(dedupeKey) === promise) {
+                        this.inFlightArtifactUpdates.delete(dedupeKey);
+                    }
+                });
+            this.inFlightArtifactUpdates.set(dedupeKey, promise);
+            return promise;
+        }
+
+        return this.updateArtifactInternal(artifactId, title, body, sessions, draft, type, _retryCount);
+    }
+
+    private async updateArtifactInternal(
         artifactId: string,
         title: string | null,
         body: string | null,
@@ -2524,7 +2574,7 @@ class Sync {
                 }
             }
 
-            const result = await apiSocket.machineRPC<any, any>(machineId, 'spawn-aha-session', {
+            const rpcParams = {
                 ...params,
                 machineId,
                 approvedNewDirectoryCreation: true,
@@ -2547,7 +2597,30 @@ class Sync {
                 bypassProfile: params.bypassProfile,
                 lifecycleTokenId: params.lifecycleTokenId,
                 ttlSeconds: params.ttlSeconds,
-            });
+            };
+
+            let result: any;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    result = await apiSocket.machineRPC<any, any>(machineId, 'spawn-aha-session', rpcParams);
+                    break;
+                } catch (error) {
+                    const shouldRetry =
+                        attempt === 0 &&
+                        error instanceof Error &&
+                        error.message.includes('RPC method not available');
+
+                    if (!shouldRetry) {
+                        throw error;
+                    }
+
+                    log.log(`Machine ${machineId} daemon RPC not ready yet; refreshing machine state and retrying spawn once`);
+                    await this.machinesSync.invalidateAndAwait().catch(() => {
+                        // Best effort refresh only; retry once regardless.
+                    });
+                    await new Promise((resolve) => setTimeout(resolve, 1500));
+                }
+            }
             const sessionId = result?.sessionId || (result?.type === 'success' ? result?.sessionId : null);
             if (result?.type === 'requestToApproveDirectoryCreation') {
                 console.warn(`Directory creation approval required for: ${result.directory}`);
@@ -2578,11 +2651,31 @@ class Sync {
         severity: 'low' | 'medium' | 'high' | 'critical';
     }): Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }> {
         try {
-            return await apiSocket.machineRPC<{ success: boolean; helpAgentSessionId?: string; error?: string }, typeof params>(
-                machineId,
-                'request-help',
-                params
-            );
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    return await apiSocket.machineRPC<{ success: boolean; helpAgentSessionId?: string; error?: string }, typeof params>(
+                        machineId,
+                        'request-help',
+                        params
+                    );
+                } catch (error) {
+                    const shouldRetry =
+                        attempt === 0 &&
+                        error instanceof Error &&
+                        error.message.includes('RPC method not available');
+
+                    if (!shouldRetry) {
+                        throw error;
+                    }
+
+                    log.log(`Machine ${machineId} help RPC not ready yet; refreshing machine state and retrying once`);
+                    await this.machinesSync.invalidateAndAwait().catch(() => {
+                        // Best effort refresh only; retry once regardless.
+                    });
+                    await new Promise((resolve) => setTimeout(resolve, 1500));
+                }
+            }
+            throw new Error(`Machine ${machineId} request-help RPC failed after retry`);
         } catch (error) {
             console.error(`Failed to request help on machine ${machineId}:`, error);
             return {
@@ -3523,6 +3616,7 @@ class Sync {
         opts?: {
             memberId?: string;
             sessionTag?: string;
+            candidateId?: string;
             specId?: string;
             customPrompt?: string;
             parentSessionId?: string;

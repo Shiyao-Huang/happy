@@ -29,12 +29,14 @@ export default React.memo(() => {
     const router = useRouter();
     const [showSecret, setShowSecret] = useState(false);
     const [copiedRecently, setCopiedRecently] = useState(false);
+    const [copiedCommandRecently, setCopiedCommandRecently] = useState(false);
     const [analyticsOptOut, setAnalyticsOptOut] = useSettingMutable('analyticsOptOut');
     const profile = useProfile();
 
     // Get the current secret key
     const currentSecret = auth.credentials?.secret || '';
     const formattedSecret = currentSecret ? formatSecretKeyForBackup(currentSecret) : '';
+    const restoreCommand = formattedSecret ? `aha auth restore --code ${formattedSecret}` : '';
 
     // Get server info
     const serverInfo = getServerInfo();
@@ -89,6 +91,17 @@ export default React.memo(() => {
             Modal.alert(t('common.success'), t('settingsAccount.secretKeyCopied'));
         } catch (error) {
             Modal.alert(t('common.error'), t('settingsAccount.secretKeyCopyFailed'));
+        }
+    };
+
+    const handleCopyRestoreCommand = async () => {
+        try {
+            await Clipboard.setStringAsync(restoreCommand);
+            setCopiedCommandRecently(true);
+            setTimeout(() => setCopiedCommandRecently(false), 2000);
+            Modal.alert(t('common.success'), t('settingsAccount.restoreCommandCopied'));
+        } catch (error) {
+            Modal.alert(t('common.error'), t('settingsAccount.restoreCommandCopyFailed'));
         }
     };
 
@@ -275,6 +288,44 @@ export default React.memo(() => {
                                     ...Typography.mono()
                                 }}>
                                     {formattedSecret}
+                                </Text>
+                            </View>
+                        </Pressable>
+                        <Pressable onPress={handleCopyRestoreCommand}>
+                            <View style={{
+                                backgroundColor: theme.colors.surface,
+                                paddingHorizontal: 16,
+                                paddingVertical: 14,
+                                borderTopWidth: 1,
+                                borderTopColor: theme.colors.divider,
+                                width: '100%',
+                                maxWidth: layout.maxWidth,
+                                alignSelf: 'center'
+                            }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                                    <Text style={{
+                                        fontSize: 11,
+                                        color: theme.colors.textSecondary,
+                                        letterSpacing: 0.5,
+                                        textTransform: 'uppercase',
+                                        ...Typography.default('semiBold')
+                                    }}>
+                                        {t('settingsAccount.restoreCommandLabel')}
+                                    </Text>
+                                    <Ionicons
+                                        name={copiedCommandRecently ? "checkmark-circle" : "copy-outline"}
+                                        size={18}
+                                        color={copiedCommandRecently ? "#34C759" : theme.colors.textSecondary}
+                                    />
+                                </View>
+                                <Text style={{
+                                    fontSize: 13,
+                                    letterSpacing: 0.5,
+                                    lineHeight: 20,
+                                    color: theme.colors.text,
+                                    ...Typography.mono()
+                                }}>
+                                    {restoreCommand}
                                 </Text>
                             </View>
                         </Pressable>

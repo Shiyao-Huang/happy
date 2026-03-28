@@ -268,13 +268,15 @@ export const SidebarMainPanel = React.memo(({ variant = 'default' }: SidebarMain
 
     const statusCounts = React.useMemo(() => {
         return agents.reduce((acc, agent) => {
+            if (agent.inactive) return acc;
+
             const hasPendingRequests = !!agent.session?.agentState?.requests && Object.keys(agent.session.agentState.requests).length > 0;
 
             if (hasPendingRequests) {
                 acc.needsDecision += 1;
             } else if (agent.session?.thinking) {
                 acc.working += 1;
-            } else if (agent.session?.presence === 'online') {
+            } else {
                 acc.online += 1;
             }
 
