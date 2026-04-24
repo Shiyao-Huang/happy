@@ -258,6 +258,13 @@ export const SidebarMainPanel = React.memo(({ variant = 'default' }: SidebarMain
                         }
                     }
 
+                    // Sidebar role candidates are official-only. Once we've checked the
+                    // canonical official lineage, do not fall back to stale opaque image
+                    // ids from historical team records just to chase score metadata.
+                    if (roleCandidates.length > 0) {
+                        return [roleKey, { signature, score: null }] as const;
+                    }
+
                     for (const imageId of imageIds) {
                         try {
                             const genome = await fetchGenomeById(imageId);
