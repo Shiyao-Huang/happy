@@ -149,6 +149,41 @@ describe('genomeHub role alias lookup', () => {
         );
     });
 
+    it('skips unknown official refs instead of issuing guaranteed 404 lookups', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+
+        const { fetchGenomeWithOfficialFallback } = await import('./genomeHub');
+        const genome = await fetchGenomeWithOfficialFallback({
+            specId: '@official/harness-architect',
+        });
+
+        expect(genome).toBeNull();
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('does not fall back to stale opaque ids once an official role lookup has already failed', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: false,
+            status: 404,
+            json: async () => ({}),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const { fetchGenomeWithOfficialFallback } = await import('./genomeHub');
+        const genome = await fetchGenomeWithOfficialFallback({
+            roleId: 'architect',
+            runtimeType: 'claude',
+            specId: 'cmnhuelkt001cfxws3bwgb9p1',
+        });
+
+        expect(genome).toBeNull();
+        expect(fetchMock).not.toHaveBeenCalledWith(
+            'http://genome-hub.test/genomes/id/cmnhuelkt001cfxws3bwgb9p1',
+            expect.any(Object),
+        );
+    });
+
     it('derives genome hub URL from the configured server URL when hub env is missing', async () => {
         delete process.env.EXPO_PUBLIC_GENOME_HUB_URL;
         getServerUrlMock.mockReturnValue('https://tenant.example.com/api');

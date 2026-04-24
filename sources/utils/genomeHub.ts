@@ -814,6 +814,12 @@ export async function fetchGenomeWithOfficialFallback(input: {
     const roleKey = typeof input.roleId === 'string' ? input.roleId.trim() : '';
     const specId = typeof input.specId === 'string' ? input.specId.trim() : '';
     const runtimeType = normalizeRuntimeType(input.runtimeType);
+    const parsedSpecRef = specId ? parseGenomeRef(specId) : null;
+    const isUnknownOfficialSpecRef = Boolean(
+        parsedSpecRef
+        && parsedSpecRef.namespace.trim().toLowerCase() === '@official'
+        && !resolveOfficialRoleGenomeName(parsedSpecRef.name),
+    );
 
     if (roleKey && resolveOfficialRoleGenomeName(roleKey)) {
         if (runtimeType) {
@@ -827,6 +833,17 @@ export async function fetchGenomeWithOfficialFallback(input: {
         if (fallback) {
             return fallback;
         }
+
+        // If the current member/session metadata already points at an official role,
+        // do not churn the network with stale opaque spec ids after the official
+        // lineage lookup has already failed.
+        if (looksLikeOpaqueGenomeId(specId)) {
+            return null;
+        }
+    }
+
+    if (isUnknownOfficialSpecRef) {
+        return null;
     }
 
     if (!specId) {
