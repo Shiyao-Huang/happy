@@ -34,7 +34,7 @@ import { t } from '@/text';
 import { type KanbanBoard } from '@/sync/kanbanTypes';
 import { CodeView } from '@/components/session/CodeView';
 import {
-    fetchGenomeById,
+    fetchGenomeWithOfficialFallback,
     parseAgentImage,
     parseAgentVerdict,
     parseTags,
@@ -121,7 +121,11 @@ function useMemberInfo(sessionId: string): MemberInfo | null {
 }
 
 /** Fetches genome data; returns {genome, spec, loading}. */
-function useGenomeData(specId: string | null | undefined): {
+function useGenomeData(
+    specId: string | null | undefined,
+    roleId: string | null | undefined,
+    runtimeType: string | null | undefined,
+): {
     genome: GenomeRecord | null;
     spec: AgentImage | null;
     loading: boolean;
@@ -136,7 +140,11 @@ function useGenomeData(specId: string | null | undefined): {
         }
         let cancelled = false;
         setLoading(true);
-        fetchGenomeById(specId)
+        fetchGenomeWithOfficialFallback({
+            specId,
+            roleId,
+            runtimeType,
+        })
             .then(g => {
                 if (!cancelled) {
                     setGenome(g);
@@ -152,7 +160,7 @@ function useGenomeData(specId: string | null | undefined): {
         return () => {
             cancelled = true;
         };
-    }, [specId]);
+    }, [roleId, runtimeType, specId]);
 
     const spec = React.useMemo(
         () => (genome?.spec ? parseAgentImage(genome.spec) : null),
@@ -694,16 +702,17 @@ function useResolvedAgentInfo(sessionId: string, specIdProp?: string | null) {
     const session = useSession(sessionId);
     const memberInfo = useMemberInfo(sessionId);
 
+    const roleId = memberInfo?.roleId ?? (session?.metadata as any)?.roleId ?? (session?.metadata as any)?.role;
+    const runtimeType = memberInfo?.runtimeType ?? session?.metadata?.runtimeType ?? session?.metadata?.flavor ?? undefined;
     const resolvedSpecId = specIdProp ?? memberInfo?.sourceImageId ?? memberInfo?.specId ?? null;
-    const { genome, spec, loading } = useGenomeData(resolvedSpecId);
-    const roleId = memberInfo?.roleId ?? (session?.metadata as any)?.roleId;
+    const { genome, spec, loading } = useGenomeData(resolvedSpecId, roleId, runtimeType);
     const candidateId = memberInfo?.candidateId ?? (session?.metadata as any)?.candidateId ?? undefined;
     const parentSessionId = memberInfo?.parentSessionId ?? undefined;
     const rawDisplayName = memberInfo?.displayName;
     const agentDisplayName = resolveDisplayName(rawDisplayName, roleId, sessionId);
     const roleLabel = getRoleLabel(roleId);
     const isOnline = !!session?.active;
-    const runtimeLabel = spec?.runtimeType ?? memberInfo?.runtimeType ?? session?.metadata?.flavor ?? undefined;
+    const runtimeLabel = spec?.runtimeType ?? runtimeType;
     const modelLabel = spec?.preferredModel ?? spec?.modelId ?? session?.metadata?.resolvedModel ?? undefined;
     const fallbackModel = spec?.fallbackModelId ?? session?.metadata?.fallbackModel ?? undefined;
     const providerLabel = spec?.modelProvider ?? undefined;

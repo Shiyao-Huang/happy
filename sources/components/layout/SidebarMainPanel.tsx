@@ -237,9 +237,12 @@ export const SidebarMainPanel = React.memo(({ variant = 'default' }: SidebarMain
         (async () => {
             const resolvedEntries = await Promise.all(
                 pendingLookups.map(async ({ roleKey, imageIds, roleCandidates, signature }) => {
-                    for (const imageId of imageIds) {
+                    // Prefer canonical official role lookups before stale image ids.
+                    // This avoids guaranteed 404s when old team records still carry
+                    // retired or deleted genome refs for otherwise-known roles.
+                    for (const candidate of roleCandidates) {
                         try {
-                            const genome = await fetchGenomeById(imageId);
+                            const genome = await fetchGenomeByName('@official', candidate);
                             const feedback = parseAgentVerdict(genome?.feedbackData ?? null);
                             if (feedback && feedback.evaluationCount > 0) {
                                 return [roleKey, {
@@ -255,9 +258,9 @@ export const SidebarMainPanel = React.memo(({ variant = 'default' }: SidebarMain
                         }
                     }
 
-                    for (const candidate of roleCandidates) {
+                    for (const imageId of imageIds) {
                         try {
-                            const genome = await fetchGenomeByName('@official', candidate);
+                            const genome = await fetchGenomeById(imageId);
                             const feedback = parseAgentVerdict(genome?.feedbackData ?? null);
                             if (feedback && feedback.evaluationCount > 0) {
                                 return [roleKey, {

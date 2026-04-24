@@ -70,49 +70,38 @@ describe('genomeHub role alias lookup', () => {
         vi.clearAllMocks();
     });
 
-    it('asks genome-hub search to resolve legacy official lookups instead of using a frontend role map', async () => {
-        const fetchMock = vi.fn()
-            .mockResolvedValueOnce({
-                ok: false,
-                status: 404,
-                json: async () => ({}),
-            })
-            .mockResolvedValueOnce({
-                ok: true,
-                status: 200,
-                json: async () => ({
-                    genomes: [
-                        makeGenome('implementer', '@official', {
-                            tags: '["official","canonical","builder"]',
-                        }),
-                    ],
-                    total: 1,
+    it('canonicalizes retired official role names before hitting genome-hub', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                genome: makeGenome('implementer', '@official', {
+                    tags: '["official","canonical","builder"]',
                 }),
-            });
+            }),
+        });
         vi.stubGlobal('fetch', fetchMock);
 
         const { fetchGenomeByName } = await import('./genomeHub');
         const genome = await fetchGenomeByName('@official', 'builder');
 
-        expect(fetchMock).toHaveBeenNthCalledWith(
-            1,
-            'http://genome-hub.test/genomes/%40official/builder',
-            expect.any(Object),
-        );
-        expect(fetchMock).toHaveBeenNthCalledWith(
-            2,
-            'http://genome-hub.test/genomes?q=builder&namespace=%40official&sortBy=score&limit=20',
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledWith(
+            'http://genome-hub.test/genomes/%40official/implementer',
             expect.any(Object),
         );
         expect(genome?.name).toBe('implementer');
     });
 
-    it('normalizes official lookup names without mapping them inside the frontend', async () => {
-        const { resolveCanonicalGenomeName } = await import('./genomeHub');
+    it('maps official aliases to canonical lookup names in the frontend', async () => {
+        const { resolveCanonicalGenomeName, resolveOfficialRoleGenomeName } = await import('./genomeHub');
 
-        expect(resolveCanonicalGenomeName('@official', 'Story Teller')).toBe('story-teller');
-        expect(resolveCanonicalGenomeName('@official', 'paper_writer')).toBe('paper-writer');
+        expect(resolveCanonicalGenomeName('@official', 'architect')).toBe('researcher');
+        expect(resolveCanonicalGenomeName('@official', 'paper_writer')).toBe('researcher');
+        expect(resolveCanonicalGenomeName('@official', 'builder')).toBe('implementer');
         expect(resolveCanonicalGenomeName('@private', 'StoryTeller')).toBe('StoryTeller');
+        expect(resolveOfficialRoleGenomeName('design-architect')).toBe('gstack-design-architect');
+        expect(resolveOfficialRoleGenomeName('harness-architect')).toBeNull();
     });
 
     it('preserves non-official names instead of lowercasing them', async () => {
@@ -132,6 +121,32 @@ describe('genomeHub role alias lookup', () => {
         );
         expect(genome?.namespace).toBe('@private');
         expect(genome?.name).toBe('MyPrivateBuilder');
+    });
+
+    it('prefers canonical official role lookup before stale spec ids', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({ genome: makeGenome('researcher', '@official') }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const { fetchGenomeWithOfficialFallback } = await import('./genomeHub');
+        const genome = await fetchGenomeWithOfficialFallback({
+            roleId: 'architect',
+            runtimeType: 'claude',
+            specId: '@official/harness-architect',
+        });
+
+        expect(genome?.name).toBe('researcher');
+        expect(fetchMock).toHaveBeenCalledWith(
+            'http://genome-hub.test/genomes/%40official/researcher',
+            expect.any(Object),
+        );
+        expect(fetchMock).not.toHaveBeenCalledWith(
+            'http://genome-hub.test/genomes/%40official/harness-architect',
+            expect.any(Object),
+        );
     });
 
     it('derives genome hub URL from the configured server URL when hub env is missing', async () => {
@@ -271,12 +286,12 @@ describe('genomeHub role alias lookup', () => {
 
         expect(fetchMock).toHaveBeenNthCalledWith(
             1,
-            'http://genome-hub.test/genomes/%40official/builder/diffs',
+            'http://genome-hub.test/genomes/%40official/implementer/diffs',
             expect.any(Object),
         );
         expect(fetchMock).toHaveBeenNthCalledWith(
             2,
-            'http://genome-hub.test/genomes/%40official/builder/seed',
+            'http://genome-hub.test/genomes/%40official/implementer/seed',
             expect.any(Object),
         );
         expect(diffs).toHaveLength(1);
@@ -312,7 +327,7 @@ describe('genomeHub role alias lookup', () => {
         const result = await fetchGenomeLedger('@official', 'builder', 2);
 
         expect(fetchMock).toHaveBeenCalledWith(
-            'http://genome-hub.test/genomes/%40official/builder/ledger?version=2',
+            'http://genome-hub.test/genomes/%40official/implementer/ledger?version=2',
             expect.any(Object),
         );
         expect(result.ledger).toHaveLength(1);

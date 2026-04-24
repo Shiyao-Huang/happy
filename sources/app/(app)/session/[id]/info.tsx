@@ -22,7 +22,7 @@ import { useHappyAction } from '@/hooks/useHappyAction';
 import { HappyError } from '@/utils/errors';
 import { useEscapeAction } from '@/hooks/useEscapeAction';
 import { getSingleRouteParam, goBackOrReturn } from '@/utils/returnNavigation';
-import { fetchGenomeById, parseAgentImage, type AgentImage, type GenomeRecord } from '@/utils/genomeHub';
+import { fetchGenomeWithOfficialFallback, parseAgentImage, type AgentImage, type GenomeRecord } from '@/utils/genomeHub';
 import { resolveImageRef } from '@/utils/imageRef';
 import { getGenomeScoreSummary } from '@/utils/genomeScoreSummary';
 import { getGenomeVersionIdentity, stringifyGenomeSpec } from '@/utils/genomeObservability';
@@ -82,23 +82,26 @@ function useGenomeForSession(session: Session): { genome: GenomeRecord | null; s
     const [genome, setGenome] = React.useState<GenomeRecord | null>(null);
     const [loading, setLoading] = React.useState(false);
 
-    // Path 1: team kanban board member ImageRef
-    const boardImageRef = React.useMemo(() => {
+    const boardMember = React.useMemo(() => {
         if (!artifact?.body) return null;
         try {
             const board = JSON.parse(artifact.body) as KanbanBoard;
-            const member = board.team?.members?.find(m => m.sessionId === session.id);
-            return resolveImageRef({
-                sourceImageId: member?.sourceImageId ?? null,
-                sourceImageVersion: member?.sourceImageVersion ?? null,
-                genomeId: member?.genomeId ?? null,
-                genomeVersion: member?.genomeVersion ?? null,
-                specId: member?.specId ?? null,
-            });
+            return board.team?.members?.find(m => m.sessionId === session.id) ?? null;
         } catch {
             return null;
         }
     }, [artifact?.body, session.id]);
+
+    // Path 1: team kanban board member ImageRef
+    const boardImageRef = React.useMemo(() => {
+        return resolveImageRef({
+            sourceImageId: boardMember?.sourceImageId ?? null,
+            sourceImageVersion: boardMember?.sourceImageVersion ?? null,
+            genomeId: boardMember?.genomeId ?? null,
+            genomeVersion: boardMember?.genomeVersion ?? null,
+            specId: boardMember?.specId ?? null,
+        });
+    }, [boardMember]);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -136,12 +139,19 @@ function useGenomeForSession(session: Session): { genome: GenomeRecord | null; s
         setLoading(true);
         resolveSpecId().then(specId => {
             if (cancelled) return;
-            if (!specId) {
+            const roleId = boardMember?.roleId ?? (session.metadata as any)?.roleId ?? (session.metadata as any)?.role ?? null;
+            const runtimeType = boardMember?.runtimeType ?? session.metadata?.runtimeType ?? session.metadata?.flavor ?? null;
+
+            if (!specId && !roleId) {
                 setGenome(null);
                 setLoading(false);
                 return;
             }
-            return fetchGenomeById(specId).then(g => {
+            return fetchGenomeWithOfficialFallback({
+                specId,
+                roleId,
+                runtimeType,
+            }).then(g => {
                 if (!cancelled) {
                     setGenome(g);
                     setLoading(false);
@@ -160,7 +170,7 @@ function useGenomeForSession(session: Session): { genome: GenomeRecord | null; s
         });
 
         return () => { cancelled = true; };
-    }, [boardImageRef, session.id, session.metadata]);
+    }, [boardImageRef, boardMember, session.id, session.metadata]);
 
     const spec = React.useMemo(() => {
         if (!genome?.spec) return null;

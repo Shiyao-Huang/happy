@@ -112,6 +112,82 @@ const genomeByIdCache = new Map<string, HubReadCacheEntry<GenomeRecord | null>>(
 const genomeByLooseRefCache = new Map<string, HubReadCacheEntry<GenomeRecord | null>>();
 let hubReadCooldownUntil = 0;
 
+const OFFICIAL_GENOME_ALIASES: Record<string, string> = {
+    architect: 'researcher',
+    'solution-architect': 'researcher',
+    framer: 'researcher',
+    builder: 'implementer',
+    member: 'implementer',
+    reviewer: 'qa-engineer',
+    qa: 'qa-engineer',
+    scout: 'researcher',
+    observer: 'researcher',
+    orchestrator: 'master',
+    'project-manager': 'master',
+    'product-owner': 'master',
+    'business-analyst': 'researcher',
+    'product-designer': 'researcher',
+    'ux-designer': 'researcher',
+    'ux-researcher': 'researcher',
+    scribe: 'researcher',
+    'technical-writer': 'researcher',
+    'spec-writer': 'researcher',
+    storyteller: 'researcher',
+    'researcher-angle-a': 'researcher',
+    'researcher-angle-b': 'researcher',
+    'methodology-designer': 'researcher',
+    'paper-writer': 'researcher',
+    'academic-editor': 'researcher',
+    'source-scout': 'researcher',
+    'stats-analyzer': 'researcher',
+    'case-analyst': 'researcher',
+    'citation-manager': 'researcher',
+    'quant-researcher': 'researcher',
+    brand: 'gstack-product-strategist',
+    'product-strategist': 'gstack-product-strategist',
+    'strategy-analyst': 'gstack-product-strategist',
+    'quant-strategy-analyst': 'gstack-product-strategist',
+    'engineering-reviewer': 'gstack-engineering-reviewer',
+    'fullstack-builder': 'gstack-fullstack-builder',
+    'data-engineer': 'gstack-fullstack-builder',
+    'quant-data-engineer': 'gstack-fullstack-builder',
+    'code-engineer': 'gstack-fullstack-builder',
+    'qa-commander': 'gstack-qa-commander',
+    'chart-designer': 'gstack-design-architect',
+    'image-prompt': 'gstack-design-architect',
+    'design-architect': 'gstack-design-architect',
+    'design-lead': 'gstack-design-architect',
+    'risk-engineer': 'gstack-security-officer',
+    'security-officer': 'gstack-security-officer',
+    'quant-risk-manager': 'gstack-security-officer',
+    'release-engineer': 'gstack-release-engineer',
+    'format-checker': 'gstack-qa-commander',
+    'plagiarism-checker': 'gstack-qa-commander',
+    'test-quant-agent': 'gstack-qa-commander',
+    'retro-analyst': 'gstack-retro-analyst',
+    'run-analyst': 'gstack-retro-analyst',
+};
+
+const KNOWN_OFFICIAL_ROLE_LOOKUPS = new Set<string>([
+    'supervisor',
+    'help-agent',
+    'org-manager',
+    'master',
+    'agent-builder',
+    'agent-builder-codex',
+    'implementer',
+    'qa-engineer',
+    'researcher',
+    'gstack-product-strategist',
+    'gstack-engineering-reviewer',
+    'gstack-fullstack-builder',
+    'gstack-qa-commander',
+    'gstack-design-architect',
+    'gstack-security-officer',
+    'gstack-release-engineer',
+    'gstack-retro-analyst',
+]);
+
 function activateHubReadCooldown(): void {
     hubReadCooldownUntil = Math.max(hubReadCooldownUntil, Date.now() + HUB_RATE_LIMIT_COOLDOWN_MS);
 }
@@ -228,6 +304,20 @@ function parseGenomeRef(value: string): ParsedGenomeRef | null {
         name: match[2],
         version: match[3] ? Number(match[3]) : null,
     };
+}
+
+function normalizeGenomeLookupName(name: string): string {
+    return name.trim().toLowerCase().replace(/[\s_]+/g, '-');
+}
+
+function normalizeRuntimeType(
+    value: string | null | undefined,
+): NonNullable<AgentImage['runtimeType']> | null {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (normalized === 'claude' || normalized === 'codex' || normalized === 'open-code') {
+        return normalized as NonNullable<AgentImage['runtimeType']>;
+    }
+    return null;
 }
 
 function looksLikeOpaqueGenomeId(value: string): boolean {
@@ -360,11 +450,21 @@ async function searchVisibleLocalGenomeByExactName(name: string): Promise<Genome
 
 export function resolveCanonicalGenomeName(namespace: string, name: string): string {
     const trimmedName = name.trim();
-    const normalizedName = name.trim().toLowerCase().replace(/[\s_]+/g, '-');
+    const normalizedName = normalizeGenomeLookupName(name);
     if (namespace.trim().toLowerCase() !== '@official') {
         return trimmedName;
     }
-    return normalizedName;
+    return OFFICIAL_GENOME_ALIASES[normalizedName] ?? normalizedName;
+}
+
+export function resolveOfficialRoleGenomeName(name: string): string | null {
+    const normalizedName = normalizeGenomeLookupName(name);
+    if (!normalizedName) {
+        return null;
+    }
+
+    const resolvedName = OFFICIAL_GENOME_ALIASES[normalizedName] ?? normalizedName;
+    return KNOWN_OFFICIAL_ROLE_LOOKUPS.has(resolvedName) ? resolvedName : null;
 }
 
 export interface AgentVerdict {
@@ -696,6 +796,44 @@ export async function fetchPreferredGenomeByName(
     }
 
     return null;
+}
+
+export async function fetchOfficialGenomeByRoleKey(roleKey: string): Promise<GenomeRecord | null> {
+    const resolvedName = resolveOfficialRoleGenomeName(roleKey);
+    if (!resolvedName) {
+        return null;
+    }
+    return fetchGenomeByName('@official', resolvedName);
+}
+
+export async function fetchGenomeWithOfficialFallback(input: {
+    specId?: string | null;
+    roleId?: string | null;
+    runtimeType?: string | null;
+}): Promise<GenomeRecord | null> {
+    const roleKey = typeof input.roleId === 'string' ? input.roleId.trim() : '';
+    const specId = typeof input.specId === 'string' ? input.specId.trim() : '';
+    const runtimeType = normalizeRuntimeType(input.runtimeType);
+
+    if (roleKey && resolveOfficialRoleGenomeName(roleKey)) {
+        if (runtimeType) {
+            const preferred = await fetchPreferredGenomeByName('@official', roleKey, runtimeType);
+            if (preferred) {
+                return preferred;
+            }
+        }
+
+        const fallback = await fetchOfficialGenomeByRoleKey(roleKey);
+        if (fallback) {
+            return fallback;
+        }
+    }
+
+    if (!specId) {
+        return null;
+    }
+
+    return fetchGenomeById(specId);
 }
 
 export async function resolvePreferredGenomeForRole(
